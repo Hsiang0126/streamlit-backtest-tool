@@ -189,16 +189,12 @@ def load_data(ticker, market_type, start, end):
         high_data = df['High'] if 'High' in df else close_data
         low_data = df['Low'] if 'Low' in df else close_data
         
-    res_df = pd.DataFrame({'close': close_data, 'high': high_data, 'low': low_data})
-    return res_df.dropna()
-
-def calculate_ma(df, period, timeframe="日線 (Daily)"):
-    if timeframe == "週線 (Weekly)":
-        weekly_close = df['close'].resample('W-FRI').last().dropna()
-        weekly_ma = weekly_close.rolling(period).mean()
-        return weekly_ma.reindex(df.index, method='ffill')
-    else:
-        return df['close'].rolling(period).mean()
+    res_df = pd.DataFrame({'close': close_data, 'high': high_data, 'low': low_data}).dropna()
+    
+    # 數據清洗：自動剔除 Yahoo Finance 歷史資料中的 0 元或極端異常壞點
+    res_df = res_df[res_df['close'] > 5.0]  # 剔除價格異常低於 5 元的髒資料
+    
+    return res_df
 
 # --- 精細 DCA 定期定額回測引擎 ---
 def run_dca_backtest_advanced(df, total_capital, freq_type, dca_mode, mode_val, custom_days, fee, slip):
