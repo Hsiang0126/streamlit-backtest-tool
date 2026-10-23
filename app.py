@@ -171,7 +171,7 @@ if "唐奇安通道 (海龜突破)" in selected_strategies:
 # --- 4. 側邊欄控制項：自訂表格顯示欄位 ---
 st.sidebar.header("4. 自訂表格顯示欄位")
 all_metrics_cols = [
-    "累積總投入本金",
+    "實際總投入本金",
     "最終資產金額",
     "最終持股市值",
     "最終剩餘現金",
@@ -538,21 +538,25 @@ def generate_signal(df, strat_name, p):
 
     return data['signal']
 
-# --- 績效指標計算 ---
+# --- 績效指標計算 (扣除剩餘現金計算真實投入本金) ---
 def eval_performance(df):
     total_days = len(df)
     if total_days < 2:
         return {}
         
-    final_invested = df['total_invested'].iloc[-1]
+    gross_invested = df['total_invested'].iloc[-1]
     final_value = df['portfolio_value'].iloc[-1]
     final_stock_val = df['stock_value'].iloc[-1]
     final_cash = df['cash'].iloc[-1]
     
-    net_profit = final_value - final_invested
-    total_return = net_profit / final_invested if final_invested > 0 else 0.0
+    # 核心邏輯修正：實際總投入本金 = 總撥款金額 - 最終未使用的剩餘現金
+    actual_invested = gross_invested - final_cash
     
-    cagr = ((final_value / final_invested) ** (252 / total_days) - 1) if final_invested > 0 else 0.0
+    net_profit = final_stock_val - actual_invested
+    total_return = net_profit / actual_invested if actual_invested > 0 else 0.0
+    
+    # CAGR 年化報酬基於實際投入的本金進行計算
+    cagr = (((final_stock_val / actual_invested) ** (252 / total_days)) - 1) if actual_invested > 0 else 0.0
     
     cum_max = df['equity_net'].cummax()
     dd = (df['equity_net'] - cum_max) / cum_max
@@ -564,7 +568,7 @@ def eval_performance(df):
         trade_count = int(df['trades'])
         
     return {
-        "累積總投入本金": f"${final_invested:,.0f}",
+        "實際總投入本金": f"${actual_invested:,.0f}",
         "最終資產金額": f"${final_value:,.0f}",
         "最終持股市值": f"${final_stock_val:,.0f}",
         "最終剩餘現金": f"${final_cash:,.0f}",
@@ -573,7 +577,7 @@ def eval_performance(df):
         "Max Drawdown (MDD)": f"{mdd:.2%}",
         "累積交易次數": f"{trade_count} 次",
         "_raw_final": final_value,
-        "_raw_invested": final_invested,
+        "_raw_invested": actual_invested,
         "_raw_return": total_return,
         "_raw_trades": trade_count
     }
@@ -595,7 +599,7 @@ if st.sidebar.button("開始多策略回測與對比"):
             # 全表字典資料
             bh_full_dict = {
                 "策略名稱": f"買入持有 (Buy & Hold){dividend_label}",
-                "累積總投入本金": bh_m["累積總投入本金"],
+                "實際總投入本金": bh_m["實際總投入本金"],
                 "最終資產金額": bh_m["最終資產金額"],
                 "最終持股市值": bh_m["最終持股市值"],
                 "最終剩餘現金": bh_m["最終剩餘現金"],
@@ -632,7 +636,7 @@ if st.sidebar.button("開始多策略回測與對比"):
                 
                 strat_full_dict = {
                     "策略名稱": strat,
-                    "累積總投入本金": m["累積總投入本金"],
+                    "實際總投入本金": m["實際總投入本金"],
                     "最終資產金額": m["最終資產金額"],
                     "最終持股市值": m["最終持股市值"],
                     "最終剩餘現金": m["最終剩餘現金"],
@@ -658,11 +662,12 @@ if st.sidebar.button("開始多策略回測與對比"):
             st.plotly_chart(fig, use_container_width=True)
             
             st.subheader("💡 戰術診斷與現金流分析")
-            diagnostic_text = f"期初本金 **${initial_capital:,.0f}** 搭配每月注資 **${monthly_inflow:,.0f}**，全期累計總投入本金達到 **{bh_m['累積總投入本金']}**：\n"
+            diagnostic_text = f"期初本金 **${initial_capital:,.0f}** 搭配每月注資 **${monthly_inflow:,.0f}**，在 Buy & Hold 策略中實際投入本金為 **{bh_m['實際總投入本金']}**：\n"
             diagnostic_text += f"* **買入持有 (Buy & Hold)** 最終變成了 **{bh_m['最終資產金額']}**（總報酬率 **{bh_m['總報酬率']}**）。\n\n"
             
             for strat, m in strategy_raw_data.items():
                 diagnostic_text += f"#### 📌 【{strat}】診斷報告\n"
+                diagnostic_text += f"* **實際投入本金**: **{m['實際總投入本金']}**（剩餘未投入現金 **{m['最終剩餘現金']}**）。\n"
                 diagnostic_text += f"* **最終資產**: **{m['最終資產金額']}**（包含持股市值 **{m['最終持股市值']}** + 剩餘現金 **{m['最終剩餘現金']}**）。\n"
                 if strat == "跌破均線且創新低買入":
                     diagnostic_text += f"* **抄底機制**: 僅在「價格低於均線 ＋ 價格創出該次跌破區間新低」時觸發建倉，全期共精準抄底 **{m['_raw_trades']} 次**。\n"
