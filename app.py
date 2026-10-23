@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 
 st.set_page_config(layout="wide", page_title="多市場與多策略回測工具")
 
-st.title("📈 多市場與多策略比較回測系統 (支援幣別選擇與匯率轉換)")
+st.title("📈 多市場與多策略比較回測系統 (彈性時間與精簡策略版)")
 
 # --- 1. 側邊欄控制項：標的與市場 ---
 st.sidebar.header("1. 選擇標的與市場")
@@ -35,10 +35,14 @@ initial_capital = st.sidebar.number_input("期初投入本金", value=300000 if 
 monthly_inflow = st.sidebar.number_input("每月固定新增可投入資金", value=30000 if "TWD" in user_currency else 1000, step=1000)
 reinvest_dividends = st.sidebar.checkbox("計入股利再投入 (還原總報酬股價)", value=True)
 
-time_option = st.sidebar.selectbox("回測時間跨度", ["近 5 年", "近 10 年", "近 20 年", "自訂日期範圍"], index=2)
+# 彈性回測時間跨度設定 (已新增近3年並解鎖自訂日期範圍限制)
+time_option = st.sidebar.selectbox("回測時間跨度", ["近 3 年", "近 5 年", "近 10 年", "近 20 年", "自訂日期範圍"], index=2)
 today = pd.to_datetime("today")
 
-if time_option == "近 5 年":
+if time_option == "近 3 年":
+    start_date = today - pd.DateOffset(years=3)
+    end_date = today
+elif time_option == "近 5 年":
     start_date = today - pd.DateOffset(years=5)
     end_date = today
 elif time_option == "近 10 年":
@@ -48,8 +52,8 @@ elif time_option == "近 20 年":
     start_date = today - pd.DateOffset(years=20)
     end_date = today
 else:
-    start_date = st.sidebar.date_input("開始日期", pd.to_datetime("2005-01-01"))
-    end_date = st.sidebar.date_input("結束日期", today)
+    start_date = st.sidebar.date_input("開始日期", value=pd.to_datetime("2005-01-01"), min_value=pd.to_datetime("1990-01-01"), max_value=today)
+    end_date = st.sidebar.date_input("結束日期", value=today, min_value=pd.to_datetime("1990-01-01"), max_value=today)
 
 # --- 2. 側邊欄控制項：交易成本 ---
 st.sidebar.header("2. 設定交易成本與滑點")
@@ -74,7 +78,7 @@ fee_rate = fee_input / 100
 tax_rate = tax_input / 100
 slippage = slip_input / 100
 
-# --- 3. 側邊欄控制項：擴充交易策略列表 ---
+# --- 3. 側邊欄控制項：精簡策略列表 (已刪除布林通道與海龜策略) ---
 st.sidebar.header("3. 選擇與設定回測策略")
 available_strats = [
     "定期定額 (DCA)",
@@ -83,9 +87,7 @@ available_strats = [
     "SMA 雙均線交叉", 
     "RSI 超買超賣", 
     "MACD 柱狀圖/交叉", 
-    "布林通道 (Bollinger Bands)", 
-    "KD 隨機指標", 
-    "唐奇安通道 (海龜突破)"
+    "KD 隨機指標"
 ]
 
 selected_strategies = st.sidebar.multiselect(
@@ -150,26 +152,12 @@ if "MACD 柱狀圖/交叉" in selected_strategies:
         "signal": int(st.sidebar.number_input("MACD 訊號線", value=9))
     }
 
-if "布林通道 (Bollinger Bands)" in selected_strategies:
-    st.sidebar.markdown("**[布林通道]**")
-    params["BB"] = {
-        "period": int(st.sidebar.number_input("BB 週期", value=20)),
-        "std_dev": st.sidebar.number_input("BB 標準差倍數", value=2.0, step=0.1)
-    }
-
 if "KD 隨機指標" in selected_strategies:
     st.sidebar.markdown("**[KD 指標]**")
     params["KD"] = {
         "period": int(st.sidebar.number_input("KD RSV週期", value=9)),
         "buy_k": st.sidebar.number_input("K低於超賣區買入", value=20),
         "sell_k": st.sidebar.number_input("K高於超買區賣出", value=80)
-    }
-
-if "唐奇安通道 (海龜突破)" in selected_strategies:
-    st.sidebar.markdown("**[唐奇安通道]**")
-    params["Donchian"] = {
-        "entry_period": int(st.sidebar.number_input("突破創 N 日高點進場", value=20)),
-        "exit_period": int(st.sidebar.number_input("跌破創 N 日低點出場", value=10))
     }
 
 # --- 4. 側邊欄控制項：自訂表格顯示欄位 ---
@@ -198,7 +186,6 @@ def load_data_and_fx(ticker, market_type, start, end, auto_adjust=True, user_cur
     if market_type == "台股" and not ticker.endswith(".TW") and not ticker.endswith(".TWO"):
         formatted_ticker = ticker + ".TW"
     
-    # 1. 抓取標的資產資料
     df = yf.download(formatted_ticker, start=start, end=end, auto_adjust=auto_adjust)
     
     if isinstance(df.columns, pd.MultiIndex):
@@ -213,7 +200,6 @@ def load_data_and_fx(ticker, market_type, start, end, auto_adjust=True, user_cur
     res_df = pd.DataFrame({'close': close_data, 'high': high_data, 'low': low_data}).dropna()
     res_df = res_df[res_df['close'] > 1.0]
     
-    # 2. 解決 0050.TW 結構性斷層
     if market_type == "台股":
         pct = res_df['close'].pct_change()
         crash_points = res_df.index[pct < -0.30]
@@ -233,7 +219,6 @@ def load_data_and_fx(ticker, market_type, start, end, auto_adjust=True, user_cur
                     
     res_df = res_df.dropna()
     
-    # 3. 匯率處理：若標的是美股或加密貨幣（以美金計價），且使用者選擇投入新台幣 (TWD)，則下載 USDTWD=X 進行匯率換算
     is_asset_usd = (market_type == "美股" or market_type == "加密貨幣")
     
     if is_asset_usd and "TWD" in user_curr:
@@ -245,7 +230,6 @@ def load_data_and_fx(ticker, market_type, start, end, auto_adjust=True, user_cur
             
         fx_series = fx_close.reindex(res_df.index, method='ffill').fillna(30.0)
         
-        # 將資產價格從美金換算為台幣價格
         res_df['close'] = res_df['close'] * fx_series
         res_df['high'] = res_df['high'] * fx_series
         res_df['low'] = res_df['low'] * fx_series
@@ -539,16 +523,6 @@ def generate_signal(df, strat_name, p):
         signal = macd.ewm(span=p['signal'], adjust=False).mean()
         data['signal'] = (macd > signal).astype(int)
         
-    elif strat_name == "布林通道 (Bollinger Bands)":
-        ma = data['close'].rolling(p['period']).mean()
-        std = data['close'].rolling(p['period']).std()
-        upper = ma + (p['std_dev'] * std)
-        lower = ma - (p['std_dev'] * std)
-        sig = pd.Series(np.nan, index=data.index)
-        sig[data['close'] > upper] = 1
-        sig[data['close'] < lower] = 0
-        data['signal'] = sig.ffill().fillna(0).astype(int)
-        
     elif strat_name == "KD 隨機指標":
         low_min = data['low'].rolling(p['period']).min()
         high_max = data['high'].rolling(p['period']).max()
@@ -557,14 +531,6 @@ def generate_signal(df, strat_name, p):
         sig = pd.Series(np.nan, index=data.index)
         sig[k < p['buy_k']] = 1
         sig[k > p['sell_k']] = 0
-        data['signal'] = sig.ffill().fillna(0).astype(int)
-        
-    elif strat_name == "唐奇安通道 (海龜突破)":
-        upper_channel = data['high'].shift(1).rolling(p['entry_period']).max()
-        lower_channel = data['low'].shift(1).rolling(p['exit_period']).min()
-        sig = pd.Series(np.nan, index=data.index)
-        sig[data['close'] > upper_channel] = 1
-        sig[data['close'] < lower_channel] = 0
         data['signal'] = sig.ffill().fillna(0).astype(int)
 
     return data['signal']
@@ -652,7 +618,7 @@ if st.sidebar.button("開始多策略回測與對比"):
                     d_interval = params["DipDCA"]["min_interval"]
                     res = run_dip_dca_backtest(data, initial_capital, monthly_inflow, d_sma, d_tf, d_buy_amt, d_interval, fee_rate, slippage)
                 else:
-                    p_key = "PriceSMA" if "突破" in strat else ("SMA" if "SMA" in strat else ("RSI" if "RSI" in strat else ("MACD" if "MACD" in strat else ("BB" if "BB" in strat else ("KD" if "KD" in strat else "Donchian")))))
+                    p_key = "PriceSMA" if "突破" in strat else ("SMA" if "SMA" in strat else ("RSI" if "RSI" in strat else ("MACD" if "MACD" in strat else ("KD" if "KD" in strat else "Donchian")))))
                     sig = generate_signal(data, strat, params.get(p_key, {}))
                     res = run_backtest(data, sig, fee_rate, tax_rate, slippage, initial_capital, monthly_inflow)
                 
