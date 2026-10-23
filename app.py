@@ -179,7 +179,7 @@ def load_data(ticker, market_type, start, end):
     if market_type == "台股" and not ticker.endswith(".TW") and not ticker.endswith(".TWO"):
         formatted_ticker = ticker + ".TW"
     
-    # 關鍵修正：加入 auto_adjust=True 自動計算還原股價（包含股利再投資，消除除息跳空缺口）
+    # 自動抓取還原股價（包含股利再投資，消除除息跳空缺口）
     df = yf.download(formatted_ticker, start=start, end=end, auto_adjust=True)
     
     if isinstance(df.columns, pd.MultiIndex):
@@ -192,8 +192,15 @@ def load_data(ticker, market_type, start, end):
         low_data = df['Low'] if 'Low' in df else close_data
         
     res_df = pd.DataFrame({'close': close_data, 'high': high_data, 'low': low_data}).dropna()
-    res_df = res_df[res_df['close'] > 1.0]  # 數據清洗：自動剔除歷史髒資料壞點
-    return res_df
+    res_df = res_df[res_df['close'] > 1.0]  # 數據清洗：自動剔除歷史極端壞點
+    
+    # 台股異常壞點自動過濾（台股法定單日漲跌幅上限為 10%，若單日變動 > 15% 必為 Yahoo 壞點數據）
+    if market_type == "台股":
+        daily_change = res_df['close'].pct_change().abs()
+        res_df.loc[daily_change > 0.15, 'close'] = np.nan
+        res_df['close'] = res_df['close'].ffill()
+        
+    return res_df.dropna()
 
 def calculate_ma(df, period, timeframe="日線 (Daily)"):
     if timeframe == "週線 (Weekly)":
