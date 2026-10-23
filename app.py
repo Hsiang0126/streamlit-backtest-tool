@@ -170,7 +170,6 @@ def run_dca_backtest(df, total_capital, n_periods, fee, slip):
     data = df.copy()
     total_days = len(data)
     
-    # 算每期間隔交易日 (以每月約 21 個交易日為標準，或將總交易日平分)
     interval = max(1, total_days // n_periods)
     dca_amount = total_capital / n_periods
     
@@ -180,7 +179,6 @@ def run_dca_backtest(df, total_capital, n_periods, fee, slip):
     trades_count = 0
     
     for i in range(len(data)):
-        # 到達扣款日且剩餘現金足夠時進行扣款
         if i % interval == 0 and cash >= dca_amount and trades_count < n_periods:
             cost_factor = 1 + fee + slip
             buy_price = data['close'].iloc[i] * cost_factor
@@ -195,7 +193,7 @@ def run_dca_backtest(df, total_capital, n_periods, fee, slip):
     data['portfolio_value'] = portfolio_values
     data['equity_net'] = data['portfolio_value'] / total_capital
     data['strategy_ret'] = data['equity_net'].pct_change().fillna(0)
-    data['position'] = (shares * data['close']) / data['portfolio_value'] # 算出即時持倉占比
+    data['position'] = (shares * data['close']) / data['portfolio_value']
     data['trades'] = trades_count
     return data
 
@@ -362,4 +360,45 @@ if st.sidebar.button("開始多策略回測與對比"):
                     "Sharpe 比率": m["Sharpe 比率"],
                     "Max Drawdown (MDD)": m["Max Drawdown (MDD)"],
                     "累積扣款/交易次數": m["累積扣款/交易次數"],
-                    "平均持倉水位
+                    "平均持倉水位": m["平均持倉水位"]
+                })
+                
+                fig.add_trace(go.Scatter(x=res.index, y=res['portfolio_value'], name=f"{strat} (${m['_raw_final']:,.0f})", line=dict(width=2)))
+            
+            fig.update_layout(title=f"{symbol} 投入 ${initial_capital:,.0f} 之累積資產金額變化 ($)", xaxis_title="日期", yaxis_title="資產總額 ($)", height=500)
+            
+            # 1. 顯示全策略績效對比表格
+            st.subheader("📊 各策略與 Buy & Hold 績效與金額對比表")
+            metrics_df = pd.DataFrame(metrics_display_list).set_index("策略名稱")
+            st.dataframe(metrics_df, use_container_width=True)
+            
+            # 2. 顯示資產總額曲線圖
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # 3. 自動化解讀診斷模組
+            st.subheader("💡 戰術診斷：分批投入與單筆投入對比分析")
+            
+            diagnostic_text = f"總投入本金 **${initial_capital:,.0f}**，在長達 **{bh_days/252:.1f} 年** 的回測中：\n"
+            diagnostic_text += f"* **單筆買入持有 (Lump-sum Buy & Hold)** 最終金額為 **${bh_final:,.0f}**（年化報酬率 **{bh_cagr:.2%}**）。\n\n"
+            
+            for strat, m in strategy_raw_data.items():
+                final_val = m["_raw_final"]
+                profit = final_val - initial_capital
+                
+                diagnostic_text += f"#### 📌 【{strat}】診斷報告\n"
+                diagnostic_text += f"* **最終資產**: **${final_val:,.0f}**（淨賺 **${profit:,.0f}**）。\n"
+                if strat == "定期定額 (DCA)":
+                    n_p = params["DCA"]["periods"]
+                    diagnostic_text += f"* **分期特性**: 總本金 **${initial_capital:,.0f}** 被拆分為 **{n_p} 期**（每期投入 **${initial_capital/n_p:,.0f}**）。\n"
+                    diagnostic_text += f"* **平滑效果**: 因為前期資金陸續扣款，早期資金在場時間較短，總報酬通常會低於早期全額在場的單筆買入；但好處是大幅減少前期抄底失敗與高點套牢的心理壓力，最大回撤亦更平滑。\n"
+                else:
+                    cagr_diff = m["_raw_cagr"] - bh_cagr
+                    if cagr_diff < 0:
+                        diagnostic_text += f"* **落後主因**: 報酬比單筆買入少了 **${bh_final - final_val:,.0f}**，主要因為持倉水位平均僅有 **{m['_raw_exposure']:.1%}**，空倉時錯過了資產主升段。\n"
+                    else:
+                        diagnostic_text += f"* **勝出優勢**: 成功超越單筆買入 **${final_val - bh_final:,.0f}**！避開了主要下跌波段。\n"
+                diagnostic_text += "\n"
+            
+            st.markdown(diagnostic_text)
+        else:
+            st.error("未能獲取數據，請確認標的與日期設定。")
