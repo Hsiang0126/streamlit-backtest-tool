@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 
 st.set_page_config(layout="wide", page_title="多市場與多策略回測工具")
 
-st.title("📈 多市場與多策略比較回測系統 (跌破均線創新低抄底版)")
+st.title("📈 多市場與多策略比較回測系統 (自訂欄位與顯示版)")
 
 # --- 1. 側邊欄控制項：標的與市場 ---
 st.sidebar.header("1. 選擇標的與市場")
@@ -168,7 +168,26 @@ if "唐奇安通道 (海龜突破)" in selected_strategies:
         "exit_period": int(st.sidebar.number_input("跌破創 N 日低點出場", value=10))
     }
 
-# --- 數據獲取與均線計算工具 (含股利再投入切換與階梯斷層修正) ---
+# --- 4. 側邊欄控制項：自訂表格顯示欄位 ---
+st.sidebar.header("4. 自訂表格顯示欄位")
+all_metrics_cols = [
+    "累積總投入本金",
+    "最終資產金額",
+    "最終持股市值",
+    "最終剩餘現金",
+    "總報酬率",
+    "CAGR 年化報酬",
+    "Max Drawdown (MDD)",
+    "累積交易次數"
+]
+
+selected_cols = st.sidebar.multiselect(
+    "選擇表格要顯示的數據欄位",
+    all_metrics_cols,
+    default=all_metrics_cols
+)
+
+# --- 數據獲取與均線計算工具 ---
 @st.cache_data
 def load_data(ticker, market_type, start, end, auto_adjust=True):
     formatted_ticker = ticker
@@ -189,7 +208,6 @@ def load_data(ticker, market_type, start, end, auto_adjust=True):
     res_df = pd.DataFrame({'close': close_data, 'high': high_data, 'low': low_data}).dropna()
     res_df = res_df[res_df['close'] > 1.0]
     
-    # 校正 Yahoo Finance 0050.TW 2014 年底結構性斷層
     if market_type == "台股":
         pct = res_df['close'].pct_change()
         crash_points = res_df.index[pct < -0.30]
@@ -262,7 +280,7 @@ def run_buy_and_hold_with_inflow(df, init_capital, monthly_inflow, fee, slip):
     data['trades'] = 1
     return data
 
-# --- DCA 定期定額回測引擎 (含每月現金流注入) ---
+# --- DCA 定期定額回測引擎 ---
 def run_dca_backtest_advanced(df, init_capital, monthly_inflow, freq_type, dca_amount, custom_days, fee, slip):
     data = df.copy()
     total_days = len(data)
@@ -520,7 +538,7 @@ def generate_signal(df, strat_name, p):
 
     return data['signal']
 
-# --- 績效指標計算 (移除平均持倉水位，新增最終持股與現金) ---
+# --- 績效指標計算 ---
 def eval_performance(df):
     total_days = len(df)
     if total_days < 2:
@@ -574,7 +592,8 @@ if st.sidebar.button("開始多策略回測與對比"):
             
             dividend_label = " (含息總報酬)" if reinvest_dividends else " (未還原價格)"
             
-            metrics_display_list.append({
+            # 全表字典資料
+            bh_full_dict = {
                 "策略名稱": f"買入持有 (Buy & Hold){dividend_label}",
                 "累積總投入本金": bh_m["累積總投入本金"],
                 "最終資產金額": bh_m["最終資產金額"],
@@ -584,7 +603,10 @@ if st.sidebar.button("開始多策略回測與對比"):
                 "CAGR 年化報酬": bh_m["CAGR 年化報酬"],
                 "Max Drawdown (MDD)": bh_m["Max Drawdown (MDD)"],
                 "累積交易次數": bh_m["累積交易次數"]
-            })
+            }
+            # 僅保留使用者勾選的欄位
+            filtered_bh_dict = {k: v for k, v in bh_full_dict.items() if k == "策略名稱" or k in selected_cols}
+            metrics_display_list.append(filtered_bh_dict)
             
             fig.add_trace(go.Scatter(x=bh_res.index, y=bh_res['portfolio_value'], name=f"買入持有 (${bh_m['_raw_final']:,.0f})", line=dict(color='gray', dash='dash')))
             
@@ -608,7 +630,7 @@ if st.sidebar.button("開始多策略回測與對比"):
                 m = eval_performance(res)
                 strategy_raw_data[strat] = m
                 
-                metrics_display_list.append({
+                strat_full_dict = {
                     "策略名稱": strat,
                     "累積總投入本金": m["累積總投入本金"],
                     "最終資產金額": m["最終資產金額"],
@@ -618,15 +640,20 @@ if st.sidebar.button("開始多策略回測與對比"):
                     "CAGR 年化報酬": m["CAGR 年化報酬"],
                     "Max Drawdown (MDD)": m["Max Drawdown (MDD)"],
                     "累積交易次數": m["累積交易次數"]
-                })
+                }
+                filtered_strat_dict = {k: v for k, v in strat_full_dict.items() if k == "策略名稱" or k in selected_cols}
+                metrics_display_list.append(filtered_strat_dict)
                 
                 fig.add_trace(go.Scatter(x=res.index, y=res['portfolio_value'], name=f"{strat} (${m['_raw_final']:,.0f})", line=dict(width=2)))
             
             fig.update_layout(title=f"{symbol} 資產總額成長曲線 ($)", xaxis_title="日期", yaxis_title="資產總額 ($)", height=500)
             
             st.subheader("📊 各策略與 Buy & Hold 績效與金額對比表")
-            metrics_df = pd.DataFrame(metrics_display_list).set_index("策略名稱")
-            st.dataframe(metrics_df, use_container_width=True)
+            if selected_cols:
+                metrics_df = pd.DataFrame(metrics_display_list).set_index("策略名稱")
+                st.dataframe(metrics_df, use_container_width=True)
+            else:
+                st.info("請在左側側邊欄「4. 自訂表格顯示欄位」中至少勾選一個顯示項目。")
             
             st.plotly_chart(fig, use_container_width=True)
             
