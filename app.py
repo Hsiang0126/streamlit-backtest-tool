@@ -230,6 +230,8 @@ def run_buy_and_hold_with_inflow(df, init_capital, monthly_inflow, fee, slip):
     shares = 0.0
     portfolio_values = []
     invested_history = []
+    cash_history = []
+    stock_val_history = []
     
     for i in range(total_days):
         if i > 0 and month_changed.iloc[i]:
@@ -243,12 +245,17 @@ def run_buy_and_hold_with_inflow(df, init_capital, monthly_inflow, fee, slip):
             shares += bought_shares
             cash = 0.0
             
-        current_value = shares * data['close'].iloc[i]
+        stock_val = shares * data['close'].iloc[i]
+        current_value = cash + stock_val
         portfolio_values.append(current_value)
         invested_history.append(total_invested)
+        cash_history.append(cash)
+        stock_val_history.append(stock_val)
         
     data['portfolio_value'] = portfolio_values
     data['total_invested'] = invested_history
+    data['cash'] = cash_history
+    data['stock_value'] = stock_val_history
     data['equity_net'] = data['portfolio_value'] / data['total_invested']
     data['strategy_ret'] = data['equity_net'].pct_change().fillna(0)
     data['position'] = 1.0
@@ -281,6 +288,8 @@ def run_dca_backtest_advanced(df, init_capital, monthly_inflow, freq_type, dca_a
     shares = 0.0
     portfolio_values = []
     invested_history = []
+    cash_history = []
+    stock_val_history = []
     daily_positions = []
     daily_trades = [0] * total_days
     
@@ -304,18 +313,22 @@ def run_dca_backtest_advanced(df, init_capital, monthly_inflow, freq_type, dca_a
         current_value = cash + current_stock_val
         portfolio_values.append(current_value)
         invested_history.append(total_invested)
+        cash_history.append(cash)
+        stock_val_history.append(current_stock_val)
         pos_ratio = (current_stock_val / current_value) if current_value > 0 else 0.0
         daily_positions.append(pos_ratio)
         
     data['portfolio_value'] = portfolio_values
     data['total_invested'] = invested_history
+    data['cash'] = cash_history
+    data['stock_value'] = stock_val_history
     data['equity_net'] = data['portfolio_value'] / data['total_invested']
     data['strategy_ret'] = data['equity_net'].pct_change().fillna(0)
     data['position'] = daily_positions
     data['trades'] = daily_trades
     return data
 
-# --- 跌破均線且創新低買入引擎 (已移除均線需下降限制) ---
+# --- 跌破均線且創新低買入引擎 ---
 def run_dip_dca_backtest(df, init_capital, monthly_inflow, sma_period, timeframe, buy_amount, min_interval_days, fee, slip):
     data = df.copy()
     sma = calculate_ma(data, sma_period, timeframe)
@@ -329,11 +342,13 @@ def run_dip_dca_backtest(df, init_capital, monthly_inflow, sma_period, timeframe
     shares = 0.0
     portfolio_values = []
     invested_history = []
+    cash_history = []
+    stock_val_history = []
     daily_positions = []
     daily_trades = [0] * total_days
     last_buy_idx = -min_interval_days
     
-    min_price_in_dip = float('inf')  # 追蹤當前跌破區間的最低價
+    min_price_in_dip = float('inf')
     
     for i in range(total_days):
         if i > 0 and month_changed.iloc[i]:
@@ -343,11 +358,9 @@ def run_dip_dca_backtest(df, init_capital, monthly_inflow, sma_period, timeframe
         price = data['close'].iloc[i]
         sma_val = sma.iloc[i]
         
-        # 條件 1：價格低於均線
         is_below_sma = not np.isnan(sma_val) and (price < sma_val)
         
         if is_below_sma:
-            # 條件 2：價格創出該次跌破區間的新低點
             if price < min_price_in_dip:
                 if (i - last_buy_idx >= min_interval_days) and cash > 0:
                     actual_buy = min(cash, buy_amount)
@@ -358,27 +371,30 @@ def run_dip_dca_backtest(df, init_capital, monthly_inflow, sma_period, timeframe
                     cash -= actual_buy
                     last_buy_idx = i
                     daily_trades[i] = 1
-                    min_price_in_dip = price  # 更新該次跌破區間的最低價
+                    min_price_in_dip = price
         else:
-            # 當價格重回均線上方時，重置區域最低價門檻
             min_price_in_dip = float('inf')
             
         current_stock_val = shares * price
         current_value = cash + current_stock_val
         portfolio_values.append(current_value)
         invested_history.append(total_invested)
+        cash_history.append(cash)
+        stock_val_history.append(current_stock_val)
         pos_ratio = (current_stock_val / current_value) if current_value > 0 else 0.0
         daily_positions.append(pos_ratio)
         
     data['portfolio_value'] = portfolio_values
     data['total_invested'] = invested_history
+    data['cash'] = cash_history
+    data['stock_value'] = stock_val_history
     data['equity_net'] = data['portfolio_value'] / data['total_invested']
     data['strategy_ret'] = data['equity_net'].pct_change().fillna(0)
     data['position'] = daily_positions
     data['trades'] = daily_trades
     return data
 
-# --- 一般擇時策略回測引擎 (含每月現金注入) ---
+# --- 一般擇時策略回測引擎 ---
 def run_backtest(df, signal_series, fee, tax, slip, init_capital, monthly_inflow):
     data = df.copy()
     total_days = len(data)
@@ -392,6 +408,8 @@ def run_backtest(df, signal_series, fee, tax, slip, init_capital, monthly_inflow
     shares = 0.0
     portfolio_values = []
     invested_history = []
+    cash_history = []
+    stock_val_history = []
     daily_trades = [0] * total_days
     
     for i in range(total_days):
@@ -422,12 +440,17 @@ def run_backtest(df, signal_series, fee, tax, slip, init_capital, monthly_inflow
             shares += bought_shares
             cash = 0.0
             
-        current_val = cash + (shares * price)
+        current_stock_val = shares * price
+        current_val = cash + current_stock_val
         portfolio_values.append(current_val)
         invested_history.append(total_invested)
+        cash_history.append(cash)
+        stock_val_history.append(current_stock_val)
         
     data['portfolio_value'] = portfolio_values
     data['total_invested'] = invested_history
+    data['cash'] = cash_history
+    data['stock_value'] = stock_val_history
     data['equity_net'] = data['portfolio_value'] / data['total_invested']
     data['strategy_ret'] = data['equity_net'].pct_change().fillna(0)
     data['position'] = position
@@ -497,7 +520,7 @@ def generate_signal(df, strat_name, p):
 
     return data['signal']
 
-# --- 績效指標計算 ---
+# --- 績效指標計算 (移除平均持倉水位，新增最終持股與現金) ---
 def eval_performance(df):
     total_days = len(df)
     if total_days < 2:
@@ -505,6 +528,9 @@ def eval_performance(df):
         
     final_invested = df['total_invested'].iloc[-1]
     final_value = df['portfolio_value'].iloc[-1]
+    final_stock_val = df['stock_value'].iloc[-1]
+    final_cash = df['cash'].iloc[-1]
+    
     net_profit = final_value - final_invested
     total_return = net_profit / final_invested if final_invested > 0 else 0.0
     
@@ -519,16 +545,15 @@ def eval_performance(df):
     else:
         trade_count = int(df['trades'])
         
-    exposure_time = df['position'].mean()
-    
     return {
         "累積總投入本金": f"${final_invested:,.0f}",
         "最終資產金額": f"${final_value:,.0f}",
+        "最終持股市值": f"${final_stock_val:,.0f}",
+        "最終剩餘現金": f"${final_cash:,.0f}",
         "總報酬率": f"{total_return:.2%}",
         "CAGR 年化報酬": f"{cagr:.2%}",
         "Max Drawdown (MDD)": f"{mdd:.2%}",
         "累積交易次數": f"{trade_count} 次",
-        "平均持倉水位": f"{exposure_time:.1%}",
         "_raw_final": final_value,
         "_raw_invested": final_invested,
         "_raw_return": total_return,
@@ -553,11 +578,12 @@ if st.sidebar.button("開始多策略回測與對比"):
                 "策略名稱": f"買入持有 (Buy & Hold){dividend_label}",
                 "累積總投入本金": bh_m["累積總投入本金"],
                 "最終資產金額": bh_m["最終資產金額"],
+                "最終持股市值": bh_m["最終持股市值"],
+                "最終剩餘現金": bh_m["最終剩餘現金"],
                 "總報酬率": bh_m["總報酬率"],
                 "CAGR 年化報酬": bh_m["CAGR 年化報酬"],
                 "Max Drawdown (MDD)": bh_m["Max Drawdown (MDD)"],
-                "累積交易次數": bh_m["累積交易次數"],
-                "平均持倉水位": bh_m["平均持倉水位"]
+                "累積交易次數": bh_m["累積交易次數"]
             })
             
             fig.add_trace(go.Scatter(x=bh_res.index, y=bh_res['portfolio_value'], name=f"買入持有 (${bh_m['_raw_final']:,.0f})", line=dict(color='gray', dash='dash')))
@@ -586,11 +612,12 @@ if st.sidebar.button("開始多策略回測與對比"):
                     "策略名稱": strat,
                     "累積總投入本金": m["累積總投入本金"],
                     "最終資產金額": m["最終資產金額"],
+                    "最終持股市值": m["最終持股市值"],
+                    "最終剩餘現金": m["最終剩餘現金"],
                     "總報酬率": m["總報酬率"],
                     "CAGR 年化報酬": m["CAGR 年化報酬"],
                     "Max Drawdown (MDD)": m["Max Drawdown (MDD)"],
-                    "累積交易次數": m["累積交易次數"],
-                    "平均持倉水位": m["平均持倉水位"]
+                    "累積交易次數": m["累積交易次數"]
                 })
                 
                 fig.add_trace(go.Scatter(x=res.index, y=res['portfolio_value'], name=f"{strat} (${m['_raw_final']:,.0f})", line=dict(width=2)))
@@ -609,7 +636,7 @@ if st.sidebar.button("開始多策略回測與對比"):
             
             for strat, m in strategy_raw_data.items():
                 diagnostic_text += f"#### 📌 【{strat}】診斷報告\n"
-                diagnostic_text += f"* **最終資產**: **{m['最終資產金額']}**（總報酬率 **{m['總報酬率']}**）。\n"
+                diagnostic_text += f"* **最終資產**: **{m['最終資產金額']}**（包含持股市值 **{m['最終持股市值']}** + 剩餘現金 **{m['最終剩餘現金']}**）。\n"
                 if strat == "跌破均線且創新低買入":
                     diagnostic_text += f"* **抄底機制**: 僅在「價格低於均線 ＋ 價格創出該次跌破區間新低」時觸發建倉，全期共精準抄底 **{m['_raw_trades']} 次**。\n"
                 diagnostic_text += "\n"
