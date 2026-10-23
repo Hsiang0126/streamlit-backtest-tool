@@ -179,7 +179,9 @@ def load_data(ticker, market_type, start, end):
     if market_type == "台股" and not ticker.endswith(".TW") and not ticker.endswith(".TWO"):
         formatted_ticker = ticker + ".TW"
     
-    df = yf.download(formatted_ticker, start=start, end=end)
+    # 關鍵修正：加入 auto_adjust=True 自動計算還原股價（包含股利再投資，消除除息跳空缺口）
+    df = yf.download(formatted_ticker, start=start, end=end, auto_adjust=True)
+    
     if isinstance(df.columns, pd.MultiIndex):
         close_data = df['Close'].iloc[:, 0] if isinstance(df['Close'], pd.DataFrame) else df['Close']
         high_data = df['High'].iloc[:, 0] if 'High' in df and isinstance(df['High'], pd.DataFrame) else (df['High'] if 'High' in df else close_data)
@@ -190,7 +192,7 @@ def load_data(ticker, market_type, start, end):
         low_data = df['Low'] if 'Low' in df else close_data
         
     res_df = pd.DataFrame({'close': close_data, 'high': high_data, 'low': low_data}).dropna()
-    res_df = res_df[res_df['close'] > 5.0]  # 數據清洗：自動剔除歷史髒資料壞點
+    res_df = res_df[res_df['close'] > 1.0]  # 數據清洗：自動剔除歷史髒資料壞點
     return res_df
 
 def calculate_ma(df, period, timeframe="日線 (Daily)"):
