@@ -172,14 +172,14 @@ if "唐奇安通道 (海龜突破)" in selected_strategies:
         "exit_period": int(st.sidebar.number_input("跌破創 N 日低點出場", value=10))
     }
 
-# --- 數據獲取與均線計算工具 ---
+# --- 數據獲取與均線計算工具 (階梯斷層修正版) ---
 @st.cache_data
 def load_data(ticker, market_type, start, end):
     formatted_ticker = ticker
     if market_type == "台股" and not ticker.endswith(".TW") and not ticker.endswith(".TWO"):
         formatted_ticker = ticker + ".TW"
     
-    # 自動抓取還原股價（包含股利再投資，消除除息跳空缺口）
+    # 抓取還原股價
     df = yf.download(formatted_ticker, start=start, end=end, auto_adjust=True)
     
     if isinstance(df.columns, pd.MultiIndex):
@@ -194,20 +194,29 @@ def load_data(ticker, market_type, start, end):
     res_df = pd.DataFrame({'close': close_data, 'high': high_data, 'low': low_data}).dropna()
     res_df = res_df[res_df['close'] > 1.0]
     
-    # 解決 Yahoo Finance 0050.TW 2014 年底的結構性階梯斷層
+    # 【關鍵修復】自適應校正 yfinance 0050.TW 2014 年的結構性階梯斷層
     if market_type == "台股":
         pct = res_df['close'].pct_change()
-        crash_mask = pct < -0.30  # 偵測非正常市場波動的巨幅斷層 (>30%)
-        if crash_mask.any():
-            crash_idx = crash_mask.idxmax()
+        crash_points = res_df.index[pct < -0.30]
+        
+        for crash_idx in crash_points:
             loc = res_df.index.get_loc(crash_idx)
             if loc > 0:
-                # 計算斷層前後銜接比例
-                ratio = res_df['close'].iloc[loc] / res_df['close'].iloc[loc - 1]
-                # 將斷層點之前的歷史價格全數進行等比例縮放平滑接軌
-                close_col_idx = res_df.columns.get_loc('close')
-                res_df.iloc[:loc, close_col_idx] = res_df['close'].iloc[:loc] * ratio
+                prev_price = res_df['close'].iloc[loc - 1]
+                after_avg = res_df['close'].iloc[loc:min(loc + 5, len(res_df))].mean()
                 
+                # 確認為階梯式下移而非單日突波
+                if after_avg / prev_price < 0.7:
+                    ratio = res_df['close'].iloc[loc] / prev_price
+                    close_col = res_df.columns.get_loc('close')
+                    high_col = res_df.columns.get_loc('high')
+                    low_col = res_df.columns.get_loc('low')
+                    
+                    # 將斷層點以前的所有歷史價格全數進行等比例縮放接軌
+                    res_df.iloc[:loc, close_col] *= ratio
+                    res_df.iloc[:loc, high_col] *= ratio
+                    res_df.iloc[:loc, low_col] *= ratio
+                    
     return res_df.dropna()
 
 def calculate_ma(df, period, timeframe="日線 (Daily)"):
