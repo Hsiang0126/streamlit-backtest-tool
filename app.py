@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 
 st.set_page_config(layout="wide", page_title="多市場與多策略回測工具")
 
-st.title("📈 多市場與多策略比較回測系統 (完整邏輯修正版)")
+st.title("📈 多市場與多策略比較回測系統 (精細 DCA 與抄底版)")
 
 # --- 1. 側邊欄控制項：標的與市場 ---
 st.sidebar.header("1. 選擇標的與市場")
@@ -72,6 +72,7 @@ slippage = slip_input / 100
 st.sidebar.header("3. 選擇與設定回測策略")
 available_strats = [
     "定期定額 (DCA)",
+    "跌破均線分批買入並持有",
     "價格突破均線買入/跌破賣出",
     "SMA 雙均線交叉", 
     "RSI 超買超賣", 
@@ -84,14 +85,37 @@ available_strats = [
 selected_strategies = st.sidebar.multiselect(
     "選擇要比較的策略（可多選）",
     available_strats,
-    default=["定期定額 (DCA)", "價格突破均線買入/跌破賣出", "SMA 雙均線交叉"]
+    default=["定期定額 (DCA)", "跌破均線分批買入並持有", "價格突破均線買入/跌破賣出"]
 )
 
 params = {}
+
 if "定期定額 (DCA)" in selected_strategies:
-    st.sidebar.markdown("**[定期定額 (DCA) 參數]**")
+    st.sidebar.markdown("**[定期定額 (DCA) 精細設定]**")
+    dca_freq = st.sidebar.selectbox("扣款頻率", ["每月 (Monthly)", "每週 (Weekly)", "雙週 (Bi-weekly)", "自訂交易日數"])
+    custom_dca_days = 20
+    if dca_freq == "自訂交易日數":
+        custom_dca_days = int(st.sidebar.number_input("相隔交易日數", value=20, min_value=1))
+        
+    dca_mode = st.sidebar.radio("扣款金額計算方式", ["按總本金平均分期", "固定每期扣款金額"])
+    if dca_mode == "按總本金平均分期":
+        dca_val = int(st.sidebar.number_input("預計總扣款期數 (次)", value=60, min_value=1))
+    else:
+        dca_val = float(st.sidebar.number_input("每期扣款金額 ($)", value=3000, min_value=100))
+        
     params["DCA"] = {
-        "periods": int(st.sidebar.number_input("總本金分幾期扣款 (次)", value=60, min_value=1, max_value=600))
+        "freq": dca_freq,
+        "mode": dca_mode,
+        "val": dca_val,
+        "custom_days": custom_dca_days
+    }
+
+if "跌破均線分批買入並持有" in selected_strategies:
+    st.sidebar.markdown("**[跌破均線分批買入設定]**")
+    params["DipDCA"] = {
+        "sma_period": int(st.sidebar.number_input("跌破基準均線 (天)", value=200, min_value=5)),
+        "min_interval": int(st.sidebar.number_input("買入最小間隔 (交易日)", value=20, min_value=1)),
+        "periods": int(st.sidebar.number_input("總本金拆為幾期買入 (次)", value=10, min_value=1))
     }
 
 if "價格突破均線買入/跌破賣出" in selected_strategies:
@@ -165,14 +189,33 @@ def load_data(ticker, market_type, start, end):
     res_df = pd.DataFrame({'close': close_data, 'high': high_data, 'low': low_data})
     return res_df.dropna()
 
-# --- 正統 DCA 定期定額回測引擎 (修正動態持倉 Bug) ---
-def run_dca_backtest(df, total_capital, n_periods, fee, slip):
+# --- 精細 DCA 定期定額回測引擎 ---
+def run_dca_backtest_advanced(df, total_capital, freq_type, dca_mode, mode_val, custom_days, fee, slip):
     data = df.copy()
     total_days = len(data)
     
-    interval = max(1, total_days // n_periods)
-    dca_amount = total_capital / n_periods
+    # 判定時間觸發點
+    if freq_type == "每月 (Monthly)":
+        month_series = pd.Series(data.index.month, index=data.index)
+        buy_mask = (month_series != month_series.shift(1))
+    elif freq_type == "每週 (Weekly)":
+        week_series = pd.Series(data.index.isocalendar().week, index=data.index)
+        buy_mask = (week_series != week_series.shift(1))
+    elif freq_type == "雙週 (Bi-weekly)":
+        buy_mask = (pd.Series(range(total_days), index=data.index) % 10 == 0)
+    else:
+        step = max(1, int(custom_days))
+        buy_mask = (pd.Series(range(total_days), index=data.index) % step == 0)
+        
+    buy_indices = set(data.index[buy_mask])
     
+    if dca_mode == "按總本金平均分期":
+        n_periods = int(mode_val)
+        dca_amount = total_capital / n_periods
+    else:
+        dca_amount = float(mode_val)
+        n_periods = int(np.ceil(total_capital / dca_amount)) if dca_amount > 0 else 1
+        
     cash = total_capital
     shares = 0.0
     portfolio_values = []
@@ -180,18 +223,60 @@ def run_dca_backtest(df, total_capital, n_periods, fee, slip):
     trades_count = 0
     
     for i in range(len(data)):
-        if i % interval == 0 and cash >= dca_amount and trades_count < n_periods:
+        current_date = data.index[i]
+        if current_date in buy_indices and cash > 0 and trades_count < n_periods:
+            actual_buy = min(cash, dca_amount)
             cost_factor = 1 + fee + slip
             buy_price = data['close'].iloc[i] * cost_factor
-            bought_shares = dca_amount / buy_price
+            bought_shares = actual_buy / buy_price
             shares += bought_shares
-            cash -= dca_amount
+            cash -= actual_buy
             trades_count += 1
             
         current_stock_val = shares * data['close'].iloc[i]
         current_value = cash + current_stock_val
         portfolio_values.append(current_value)
+        pos_ratio = (current_stock_val / current_value) if current_value > 0 else 0.0
+        daily_positions.append(pos_ratio)
         
+    data['portfolio_value'] = portfolio_values
+    data['equity_net'] = data['portfolio_value'] / total_capital
+    data['strategy_ret'] = data['equity_net'].pct_change().fillna(0)
+    data['position'] = daily_positions
+    data['trades'] = trades_count
+    return data
+
+# --- 跌破均線分批買入並持有引擎 (逢低抄底) ---
+def run_dip_dca_backtest(df, total_capital, sma_period, min_interval_days, n_periods, fee, slip):
+    data = df.copy()
+    sma = data['close'].rolling(sma_period).mean()
+    
+    dca_amount = total_capital / n_periods
+    cash = total_capital
+    shares = 0.0
+    portfolio_values = []
+    daily_positions = []
+    trades_count = 0
+    last_buy_idx = -min_interval_days
+    
+    for i in range(len(data)):
+        price = data['close'].iloc[i]
+        sma_val = sma.iloc[i]
+        
+        # 觸發條件：價格 < 均線 且 相隔足夠天數
+        if not np.isnan(sma_val) and price < sma_val and (i - last_buy_idx >= min_interval_days) and cash > 0 and trades_count < n_periods:
+            actual_buy = min(cash, dca_amount)
+            cost_factor = 1 + fee + slip
+            buy_price = price * cost_factor
+            bought_shares = actual_buy / buy_price
+            shares += bought_shares
+            cash -= actual_buy
+            trades_count += 1
+            last_buy_idx = i
+            
+        current_stock_val = shares * price
+        current_value = cash + current_stock_val
+        portfolio_values.append(current_value)
         pos_ratio = (current_stock_val / current_value) if current_value > 0 else 0.0
         daily_positions.append(pos_ratio)
         
@@ -280,7 +365,7 @@ def generate_signal(df, strat_name, p):
 
     return data['signal']
 
-# --- 績效指標計算 (修正交易次數與邊界防護) ---
+# --- 績效指標計算 ---
 def eval_performance(df, init_capital):
     ret = df['strategy_ret']
     total_days = len(df)
@@ -353,8 +438,16 @@ if st.sidebar.button("開始多策略回測與對比"):
             
             for strat in selected_strategies:
                 if strat == "定期定額 (DCA)":
-                    n_p = params["DCA"]["periods"]
-                    res = run_dca_backtest(data, initial_capital, n_p, fee_rate, slippage)
+                    d_freq = params["DCA"]["freq"]
+                    d_mode = params["DCA"]["mode"]
+                    d_val = params["DCA"]["val"]
+                    d_custom = params["DCA"]["custom_days"]
+                    res = run_dca_backtest_advanced(data, initial_capital, d_freq, d_mode, d_val, d_custom, fee_rate, slippage)
+                elif strat == "跌破均線分批買入並持有":
+                    d_sma = params["DipDCA"]["sma_period"]
+                    d_interval = params["DipDCA"]["min_interval"]
+                    d_periods = params["DipDCA"]["periods"]
+                    res = run_dip_dca_backtest(data, initial_capital, d_sma, d_interval, d_periods, fee_rate, slippage)
                 else:
                     p_key = "PriceSMA" if "突破" in strat else ("SMA" if "SMA" in strat else ("RSI" if "RSI" in strat else ("MACD" if "MACD" in strat else ("BB" if "BB" in strat else ("KD" if "KD" in strat else "Donchian")))))
                     sig = generate_signal(data, strat, params.get(p_key, {}))
@@ -399,9 +492,13 @@ if st.sidebar.button("開始多策略回測與對比"):
                 diagnostic_text += f"#### 📌 【{strat}】診斷報告\n"
                 diagnostic_text += f"* **最終資產**: **${final_val:,.0f}**（淨賺 **${profit:,.0f}**）。\n"
                 if strat == "定期定額 (DCA)":
-                    n_p = params["DCA"]["periods"]
-                    diagnostic_text += f"* **分期特性**: 總本金 **${initial_capital:,.0f}** 被拆分為 **{n_p} 期**（每期投入 **${initial_capital/n_p:,.0f}**）。\n"
-                    diagnostic_text += f"* **平滑效果**: 因為前期資金陸續扣款，早期資金在場時間較短，總報酬通常會低於早期全額在場的單筆買入；但好處是大幅減少前期抄底失敗與高點套牢的心理壓力，最大回撤亦更平滑。\n"
+                    d_freq = params["DCA"]["freq"]
+                    diagnostic_text += f"* **時間頻率**: 採用 **{d_freq}** 設定進行定期扣款，共完成了 **{m['_raw_trades']} 次** 扣款。\n"
+                    diagnostic_text += f"* **平滑效果**: 分批進場有效降低了單筆高點套牢的心理壓力，雖然資金在場時間較短導致牛市報酬低於單筆買入，但整體風險曲線更平滑。\n"
+                elif strat == "跌破均線分批買入並持有":
+                    d_sma = params["DipDCA"]["sma_period"]
+                    diagnostic_text += f"* **抄底策略特性**: 設定當價格跌破 **{d_sma} 日均線** 時才觸發扣款，全期共於市場回檔低檔成功分批建倉 **{m['_raw_trades']} 次**。\n"
+                    diagnostic_text += f"* **避高就低**: 此策略成功避開了高檔追高，並專注在價格低於均線時累積廉價籌碼。\n"
                 else:
                     cagr_diff = m["_raw_cagr"] - bh_cagr
                     if cagr_diff < 0:
