@@ -8,13 +8,27 @@ st.set_page_config(layout="wide", page_title="多市場與多策略回測工具"
 
 st.title("📈 多市場與多策略比較回測系統 (進階診斷版)")
 
-# --- 1. 側邊欄控制項：標的與市場 ---
+# --- 1. 側邊欄控制項：標的與市場 (含輔助輸入與預設選單) ---
 st.sidebar.header("1. 選擇標的與市場")
-market = st.sidebar.selectbox("市場類別", ["台股", "美股", "加密貨幣"])
+market = st.sidebar.selectbox("市場類別", ["美股", "台股", "加密貨幣"])
 
-default_symbol = "0050" if market == "台股" else ("AAPL" if market == "美股" else "BTC-USD")
-symbol = st.sidebar.text_input("輸入股票/幣種代碼", value=default_symbol)
+# 針對不同市場提供「熱門標的清單」，支援打字搜尋與自訂輸入
+preset_options = {
+    "台股": ["0050 (元大台灣50)", "2330 (台積電)", "0056 (元大高股息)", "2317 (鴻海)", "2454 (聯發科)", "自訂輸入..."],
+    "美股": ["QQQ (納斯達克100)", "AAPL (蘋果)", "NVDA (輝達)", "SPY (S&P 500)", "TSLA (特斯拉)", "MSFT (微軟)", "自訂輸入..."],
+    "加密貨幣": ["BTC-USD (比特幣)", "ETH-USD (乙太幣)", "SOL-USD (索拉納)", "BNB-USD (幣安幣)", "自訂輸入..."]
+}
 
+selected_preset = st.sidebar.selectbox("選擇熱門標的（可打字搜尋）", preset_options[market])
+
+if "自訂輸入" in selected_preset:
+    symbol_input = st.sidebar.text_input("輸入自訂代碼 (例如: AMD, 2603, SOL-USD)", value="QQQ" if market == "美股" else ("0050" if market == "台股" else "BTC-USD"))
+    symbol = symbol_input.strip().upper()
+else:
+    # 自動擷取括號前的純代碼
+    symbol = selected_preset.split(" ")[0].strip()
+
+# 時間跨度選擇
 time_option = st.sidebar.selectbox("回測時間跨度", ["近 5 年", "近 10 年", "近 20 年", "自訂日期範圍"], index=2)
 today = pd.to_datetime("today")
 
@@ -30,7 +44,6 @@ elif time_option == "近 20 年":
 else:
     start_date = st.sidebar.date_input("開始日期", pd.to_datetime("2005-01-01"))
     end_date = st.sidebar.date_input("結束日期", today)
-
 # --- 2. 側邊欄控制項：交易成本 ---
 st.sidebar.header("2. 設定交易成本與滑點")
 def get_default_costs(market_type, ticker_symbol):
