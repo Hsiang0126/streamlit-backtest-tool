@@ -6,13 +6,12 @@ import plotly.graph_objects as go
 
 st.set_page_config(layout="wide", page_title="多市場與多策略回測工具")
 
-st.title("📈 多市場與多策略比較回測系統 (進階診斷版)")
+st.title("📈 多市場與多策略比較回測系統 (完整金額與策略版)")
 
-# --- 1. 側邊欄控制項：標的與市場 (含輔助輸入與預設選單) ---
+# --- 1. 側邊欄控制項：標的與市場 ---
 st.sidebar.header("1. 選擇標的與市場")
 market = st.sidebar.selectbox("市場類別", ["美股", "台股", "加密貨幣"])
 
-# 針對不同市場提供「熱門標的清單」，支援打字搜尋與自訂輸入
 preset_options = {
     "台股": ["0050 (元大台灣50)", "2330 (台積電)", "0056 (元大高股息)", "2317 (鴻海)", "2454 (聯發科)", "自訂輸入..."],
     "美股": ["QQQ (納斯達克100)", "AAPL (蘋果)", "NVDA (輝達)", "SPY (S&P 500)", "TSLA (特斯拉)", "MSFT (微軟)", "自訂輸入..."],
@@ -22,13 +21,14 @@ preset_options = {
 selected_preset = st.sidebar.selectbox("選擇熱門標的（可打字搜尋）", preset_options[market])
 
 if "自訂輸入" in selected_preset:
-    symbol_input = st.sidebar.text_input("輸入自訂代碼 (例如: AMD, 2603, SOL-USD)", value="QQQ" if market == "美股" else ("0050" if market == "台股" else "BTC-USD"))
+    symbol_input = st.sidebar.text_input("輸入自訂代碼", value="QQQ" if market == "美股" else ("0050" if market == "台股" else "BTC-USD"))
     symbol = symbol_input.strip().upper()
 else:
-    # 自動擷取括號前的純代碼
     symbol = selected_preset.split(" ")[0].strip()
 
-# 時間跨度選擇
+# 投入本金設定
+initial_capital = st.sidebar.number_input("期初投入本金 ($)", value=100000, step=10000)
+
 time_option = st.sidebar.selectbox("回測時間跨度", ["近 5 年", "近 10 年", "近 20 年", "自訂日期範圍"], index=2)
 today = pd.to_datetime("today")
 
@@ -44,6 +44,7 @@ elif time_option == "近 20 年":
 else:
     start_date = st.sidebar.date_input("開始日期", pd.to_datetime("2005-01-01"))
     end_date = st.sidebar.date_input("結束日期", today)
+
 # --- 2. 側邊欄控制項：交易成本 ---
 st.sidebar.header("2. 設定交易成本與滑點")
 def get_default_costs(market_type, ticker_symbol):
@@ -70,7 +71,9 @@ slippage = slip_input / 100
 # --- 3. 側邊欄控制項：擴充交易策略列表 ---
 st.sidebar.header("3. 選擇與設定回測策略")
 available_strats = [
-    "SMA 均線交叉", 
+    "價格突破均線買入/跌破賣出",
+    "定期定額 (DCA)",
+    "SMA 雙均線交叉", 
     "RSI 超買超賣", 
     "MACD 柱狀圖/交叉", 
     "布林通道 (Bollinger Bands)", 
@@ -81,12 +84,18 @@ available_strats = [
 selected_strategies = st.sidebar.multiselect(
     "選擇要比較的策略（可多選）",
     available_strats,
-    default=["SMA 均線交叉", "RSI 超買超賣", "唐奇安通道 (海龜突破)"]
+    default=["價格突破均線買入/跌破賣出", "定期定額 (DCA)", "SMA 雙均線交叉"]
 )
 
 params = {}
-if "SMA 均線交叉" in selected_strategies:
-    st.sidebar.markdown("**[SMA 均線]**")
+if "價格突破均線買入/跌破賣出" in selected_strategies:
+    st.sidebar.markdown("**[價格突破均線策略]**")
+    params["PriceSMA"] = {
+        "period": int(st.sidebar.number_input("基準均線天數 (天)", value=20, min_value=1))
+    }
+
+if "SMA 雙均線交叉" in selected_strategies:
+    st.sidebar.markdown("**[SMA 雙均線]**")
     params["SMA"] = {
         "fast": int(st.sidebar.number_input("SMA 快線 (天)", value=20)),
         "slow": int(st.sidebar.number_input("SMA 慢線 (天)", value=60))
@@ -154,7 +163,14 @@ def load_data(ticker, market_type, start, end):
 def generate_signal(df, strat_name, p):
     data = df.copy()
     
-    if strat_name == "SMA 均線交叉":
+    if strat_name == "價格突破均線買入/跌破賣出":
+        sma = data['close'].rolling(p['period']).mean()
+        data['signal'] = (data['close'] > sma).astype(int)
+        
+    elif strat_name == "定期定額 (DCA)":
+        data['signal'] = 1 # 定期定額為持續在場
+        
+    elif strat_name == "SMA 雙均線交叉":
         fast_m = data['close'].rolling(p['fast']).mean()
         slow_m = data['close'].rolling(p['slow']).mean()
         data['signal'] = (fast_m > slow_m).astype(int)
@@ -183,8 +199,8 @@ def generate_signal(df, strat_name, p):
         upper = ma + (p['std_dev'] * std)
         lower = ma - (p['std_dev'] * std)
         sig = pd.Series(np.nan, index=data.index)
-        sig[data['close'] > upper] = 1   # 突破上軌順勢做多
-        sig[data['close'] < lower] = 0   # 跌破下軌出場
+        sig[data['close'] > upper] = 1
+        sig[data['close'] < lower] = 0
         data['signal'] = sig.ffill().fillna(0).astype(int)
         
     elif strat_name == "KD 隨機指標":
@@ -201,14 +217,14 @@ def generate_signal(df, strat_name, p):
         upper_channel = data['high'].shift(1).rolling(p['entry_period']).max()
         lower_channel = data['low'].shift(1).rolling(p['exit_period']).min()
         sig = pd.Series(np.nan, index=data.index)
-        sig[data['close'] > upper_channel] = 1 # 創新高買入
-        sig[data['close'] < lower_channel] = 0 # 創新低賣出
+        sig[data['close'] > upper_channel] = 1
+        sig[data['close'] < lower_channel] = 0
         data['signal'] = sig.ffill().fillna(0).astype(int)
 
     return data['signal']
 
 # --- 回測核心引擎 ---
-def run_backtest(df, signal_series, fee, tax, slip):
+def run_backtest(df, signal_series, fee, tax, slip, init_capital):
     data = df.copy()
     data['position'] = signal_series.shift(1).fillna(0)
     data['trades'] = data['position'].diff().abs().fillna(0)
@@ -221,119 +237,124 @@ def run_backtest(df, signal_series, fee, tax, slip):
     
     data['strategy_ret'] = (data['market_ret'] * data['position']) - data['cost']
     data['equity_net'] = (1 + data['strategy_ret']).cumprod()
+    data['portfolio_value'] = data['equity_net'] * init_capital
     return data
 
 # --- 績效指標計算 ---
-def eval_performance(df):
+def eval_performance(df, init_capital):
     ret = df['strategy_ret']
     total_days = len(df)
     if total_days < 2:
         return {}
     cagr = (df['equity_net'].iloc[-1]) ** (252 / total_days) - 1
     vol = ret.std() * np.sqrt(252)
-    downside_vol = ret[ret < 0].std() * np.sqrt(252)
     sharpe = (ret.mean() * 252) / vol if vol != 0 else 0
-    sortino = (ret.mean() * 252) / downside_vol if downside_vol != 0 and not np.isnan(downside_vol) else 0
     
     cum_max = df['equity_net'].cummax()
     dd = (df['equity_net'] - cum_max) / cum_max
     mdd = dd.min()
     
-    pos_ret = ret[ret > 0].sum()
-    neg_ret = abs(ret[ret < 0].sum())
-    profit_factor = (pos_ret / neg_ret) if neg_ret != 0 else np.nan
     trade_count = int(df['trades'].sum())
     exposure_time = df['position'].mean()
+    final_value = df['portfolio_value'].iloc[-1]
     
     return {
+        "期初投入": f"${init_capital:,.0f}",
+        "最終金額": f"${final_value:,.0f}",
         "CAGR 年化報酬": f"{cagr:.2%}",
         "Sharpe 比率": f"{sharpe:.2f}",
-        "Sortino 比率": f"{sortino:.2f}",
         "Max Drawdown (MDD)": f"{mdd:.2%}",
-        "Profit Factor 獲利因子": f"{profit_factor:.2f}" if not np.isnan(profit_factor) else "N/A",
         "總交易次數": f"{trade_count} 次",
-        "在場持倉時間比例": f"{exposure_time:.1%}",
+        "在場持倉時間": f"{exposure_time:.1%}",
         "_raw_cagr": cagr,
         "_raw_mdd": mdd,
         "_raw_trades": trade_count,
-        "_raw_exposure": exposure_time
+        "_raw_exposure": exposure_time,
+        "_raw_final": final_value
     }
 
 # --- 執行與顯示 ---
 if st.sidebar.button("開始多策略回測與對比"):
-    if not selected_strategies:
-        st.error("請至少在左側邊欄選擇一種策略！")
-    else:
-        with st.spinner("正在進行多策略回測運算..."):
-            data = load_data(symbol, market, start_date, end_date)
-            if len(data) > 0:
-                data['buy_hold'] = (1 + data['close'].pct_change().fillna(0)).cumprod()
+    with st.spinner("正在進行多策略回測運算..."):
+        data = load_data(symbol, market, start_date, end_date)
+        if len(data) > 0:
+            data['buy_hold_equity'] = (1 + data['close'].pct_change().fillna(0)).cumprod()
+            data['buy_hold_value'] = data['buy_hold_equity'] * initial_capital
+            
+            bh_days = len(data)
+            bh_cagr = (data['buy_hold_equity'].iloc[-1]) ** (252 / bh_days) - 1
+            bh_cum_max = data['buy_hold_equity'].cummax()
+            bh_mdd = ((data['buy_hold_equity'] - bh_cum_max) / bh_cum_max).min()
+            bh_final = data['buy_hold_value'].iloc[-1]
+            
+            fig = go.Figure()
+            metrics_display_list = []
+            strategy_raw_data = {}
+            
+            # 1. 第一列加入【買入並持有 (Buy & Hold)】
+            metrics_display_list.append({
+                "策略名稱": "買入並持有 (Buy & Hold)",
+                "期初投入": f"${initial_capital:,.0f}",
+                "最終金額": f"${bh_final:,.0f}",
+                "CAGR 年化報酬": f"{bh_cagr:.2%}",
+                "Sharpe 比率": "-",
+                "Max Drawdown (MDD)": f"{bh_mdd:.2%}",
+                "總交易次數": "1 次",
+                "在場持倉時間": "100.0%"
+            })
+            
+            fig.add_trace(go.Scatter(x=data.index, y=data['buy_hold_value'], name=f"買入持有 (${bh_final:,.0f})", line=dict(color='gray', dash='dash')))
+            
+            for strat in selected_strategies:
+                p_key = "PriceSMA" if "突破" in strat else ("SMA" if "SMA" in strat else ("RSI" if "RSI" in strat else ("MACD" if "MACD" in strat else ("BB" if "BB" in strat else ("KD" if "KD" in strat else "Donchian")))))
+                sig = generate_signal(data, strat, params.get(p_key, {}))
+                res = run_backtest(data, sig, fee_rate, tax_rate, slippage, initial_capital)
                 
-                # 計算 Buy & Hold 指標
-                bh_total_days = len(data)
-                bh_cagr = (data['buy_hold'].iloc[-1]) ** (252 / bh_total_days) - 1
-                bh_cum_max = data['buy_hold'].cummax()
-                bh_mdd = ((data['buy_hold'] - bh_cum_max) / bh_cum_max).min()
+                m = eval_performance(res, initial_capital)
+                strategy_raw_data[strat] = m
                 
-                fig = go.Figure()
-                metrics_display_list = []
-                strategy_raw_data = {}
+                metrics_display_list.append({
+                    "策略名稱": strat,
+                    "期初投入": m["期初投入"],
+                    "最終金額": m["最終金額"],
+                    "CAGR 年化報酬": m["CAGR 年化報酬"],
+                    "Sharpe 比率": m["Sharpe 比率"],
+                    "Max Drawdown (MDD)": m["Max Drawdown (MDD)"],
+                    "總交易次數": m["總交易次數"],
+                    "在場持倉時間": m["在場持倉時間"]
+                })
                 
-                fig.add_trace(go.Scatter(x=data.index, y=data['buy_hold'], name=f"買入持有 (CAGR: {bh_cagr:.1%})", line=dict(color='gray', dash='dash')))
+                fig.add_trace(go.Scatter(x=res.index, y=res['portfolio_value'], name=f"{strat} (${m['_raw_final']:,.0f})", line=dict(width=2)))
+            
+            fig.update_layout(title=f"{symbol} 投入 ${initial_capital:,.0f} 之累積資產金額變化 ($)", xaxis_title="日期", yaxis_title="資產總額 ($)", height=500)
+            
+            # 1. 顯示全策略績效對比表格 (含 Buy & Hold 與實際金額)
+            st.subheader("📊 各策略與 Buy & Hold 績效與金額對比表")
+            metrics_df = pd.DataFrame(metrics_display_list).set_index("策略名稱")
+            st.dataframe(metrics_df, use_container_width=True)
+            
+            # 2. 顯示資產總額曲線圖
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # 3. 自動化解讀診斷模組
+            st.subheader("💡 戰術診斷：本金變化與策略績效分析")
+            
+            diagnostic_text = f"期初投入 **${initial_capital:,.0f}**，在長達 **{bh_days/252:.1f} 年** 的回測中：\n"
+            diagnostic_text += f"* **買入並持有 (Buy & Hold)** 最終變成了 **${bh_final:,.0f}**（淨賺 **${bh_final - initial_capital:,.0f}**，年化報酬率 **{bh_cagr:.2%}**）。\n\n"
+            
+            for strat, m in strategy_raw_data.items():
+                final_val = m["_raw_final"]
+                profit = final_val - initial_capital
+                cagr_diff = m["_raw_cagr"] - bh_cagr
                 
-                for strat in selected_strategies:
-                    p_key = "SMA" if "SMA" in strat else ("RSI" if "RSI" in strat else ("MACD" if "MACD" in strat else ("BB" if "BB" in strat else ("KD" if "KD" in strat else "Donchian"))))
-                    sig = generate_signal(data, strat, params[p_key])
-                    res = run_backtest(data, sig, fee_rate, tax_rate, slippage)
-                    
-                    m = eval_performance(res)
-                    strategy_raw_data[strat] = m
-                    
-                    # 整理顯示表格欄位
-                    disp_m = {
-                        "策略名稱": strat,
-                        "CAGR 年化報酬": m["CAGR 年化報酬"],
-                        "Sharpe 比率": m["Sharpe 比率"],
-                        "Max Drawdown (MDD)": m["Max Drawdown (MDD)"],
-                        "總交易次數": m["總交易次數"],
-                        "持倉時間比例": m["在場持倉時間比例"]
-                    }
-                    metrics_display_list.append(disp_m)
-                    
-                    fig.add_trace(go.Scatter(x=res.index, y=res['equity_net'], name=f"{strat} ({m['CAGR 年化報酬']})", line=dict(width=2)))
-                
-                fig.update_layout(title=f"{symbol} 多策略資產曲線對比", xaxis_title="日期", yaxis_title="淨值 (Base=1.0)", height=500)
-                
-                # 1. 顯示全策略績效對比表格
-                st.subheader("📊 各策略與 Buy & Hold 績效指標對比表")
-                metrics_df = pd.DataFrame(metrics_display_list).set_index("策略名稱")
-                st.dataframe(metrics_df, use_container_width=True)
-                
-                # 2. 顯示資產曲線圖
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # 3. 自動化解讀診斷模組
-                st.subheader("💡 戰術診斷：為什麼策略表現會落後於「買入並持有」？")
-                
-                diagnostic_text = f"在本次長達 **{bh_total_days/252:.1f} 年** 的回測週期中，**買入並持有 (Buy & Hold)** 實現了 **{bh_cagr:.2%}** 的年化報酬率，最大回撤為 **{bh_mdd:.2%}**。\n\n"
-                
-                for strat, m in strategy_raw_data.items():
-                    cagr_diff = m["_raw_cagr"] - bh_cagr
-                    cash_time = (1 - m["_raw_exposure"])
-                    trades = m["_raw_trades"]
-                    
-                    diagnostic_text += f"#### 📌 【{strat}】診斷報告\n"
-                    if cagr_diff < 0:
-                        diagnostic_text += f"* **報酬差距**：年化報酬率比 Buy & Hold 低了 **{abs(cagr_diff):.2%}**。\n"
-                        diagnostic_text += f"* **核心敗因一 (空倉代價)**：該策略有 **{cash_time:.1%}** 的時間處於空倉狀態。對於 {symbol} 這類具備長期向上趨勢的資產，空倉意味著徹底錯過市場暴漲段的複利累積。\n"
-                        diagnostic_text += f"* **核心敗因二 (摩擦損耗)**：共進行了 **{trades} 次** 進出場。每次交易產生的手續費、證交稅與滑點在長週期下產生嚴重的暗扣效應。\n"
-                        if m["_raw_mdd"] > bh_mdd:
-                            diagnostic_text += f"* **優點/避險效果**：雖然總報酬落後，但最大回撤成功控制在 **{m['_raw_mdd']:.2%}**（優於大盤的 {bh_mdd:.2%}），有效減緩熊市恐慌。\n"
-                    else:
-                        diagnostic_text += f"* **勝出優勢**：年化報酬率超越 Buy & Hold **{cagr_diff:.2%}**！成功靠著指標避開多數下跌波段，並保持良好的獲利能力。\n"
-                    
-                    diagnostic_text += "\n"
-                
-                st.markdown(diagnostic_text)
-            else:
-                st.error("未能獲取數據，請確認標的與日期設定。")
+                diagnostic_text += f"#### 📌 【{strat}】診斷報告\n"
+                diagnostic_text += f"* **最終資產**: **${final_val:,.0f}**（淨賺 **${profit:,.0f}**）。\n"
+                if cagr_diff < 0:
+                    diagnostic_text += f"* **落後主因**: 報酬比 Buy & Hold 少了 **${bh_final - final_val:,.0f}**。主要源於持倉時間僅有 **{m['_raw_exposure']:.1%}**，空倉期間錯過了資產暴漲段，且進出場 **{m['_raw_trades']} 次** 累積了摩擦成本損耗。\n"
+                else:
+                    diagnostic_text += f"* **勝出優勢**: 成功超越 Buy & Hold **${final_val - bh_final:,.0f}**！避開了主要下跌段並保持資金高效率運作。\n"
+                diagnostic_text += "\n"
+            
+            st.markdown(diagnostic_text)
+        else:
+            st.error("未能獲取數據，請確認標的與日期設定。")
