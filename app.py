@@ -37,21 +37,33 @@ else:
     start_date = st.sidebar.date_input("開始日期", pd.to_datetime("2005-01-01"))
     end_date = st.sidebar.date_input("結束日期", today)
 
-# --- 2. 側邊欄控制項：交易成本 ---
+# --- 2. 側邊欄控制項：交易成本 (自動判定與推薦機制) ---
 st.sidebar.header("2. 設定交易成本與滑點")
-if market == "台股":
-    fee_rate = st.sidebar.number_input("手續費率 (%)", value=0.071, step=0.01) / 100
-    default_tax = 0.10 if symbol.startswith("00") else 0.30
-    tax_rate = st.sidebar.number_input("賣出證交稅 (%)", value=default_tax, step=0.05) / 100
-    slippage = st.sidebar.number_input("單邊預估滑點 (%)", value=0.03, step=0.01) / 100
-elif market == "美股":
-    fee_rate = st.sidebar.number_input("手續費率 (%)", value=0.00, step=0.01) / 100
-    tax_rate = 0.0
-    slippage = st.sidebar.number_input("單邊預估滑點 (%)", value=0.03, step=0.01) / 100
-else:  # 加密貨幣
-    fee_rate = st.sidebar.number_input("手續費率 (%)", value=0.10, step=0.01) / 100
-    tax_rate = 0.0
-    slippage = st.sidebar.number_input("單邊預估滑點 (%)", value=0.10, step=0.01) / 100
+
+# 自動計算推薦預設值
+def get_default_costs(market_type, ticker_symbol):
+    if market_type == "台股":
+        # 判定是否為 ETF (代碼以 00 開頭)
+        clean_symbol = ticker_symbol.strip().upper()
+        if clean_symbol.startswith("00"):
+            return 0.071, 0.10, 0.02  # ETF: 手續費0.071%, 證交稅0.1%, 滑點0.02%
+        else:
+            return 0.071, 0.30, 0.03  # 個股: 手續費0.071%, 證交稅0.3%, 滑點0.03%
+    elif market_type == "美股":
+        return 0.00, 0.00, 0.03      # 免手續費/無稅, 滑點0.03%
+    else:  # 加密貨幣
+        return 0.10, 0.00, 0.10      # 交易所現貨費率0.1%, 滑點0.10%
+
+auto_fee, auto_tax, auto_slip = get_default_costs(market, symbol)
+
+# 提供給使用者檢視並可手動微調 (透過 value 帶入自動判定的預設值)
+fee_input = st.sidebar.number_input("手續費率 (%)", value=auto_fee, step=0.01, format="%.3f")
+tax_input = st.sidebar.number_input("賣出證交稅 (%)", value=auto_tax, step=0.01, format="%.2f")
+slip_input = st.sidebar.number_input("單邊預估滑點 (%)", value=auto_slip, step=0.01, format="%.2f")
+
+fee_rate = fee_input / 100
+tax_rate = tax_input / 100
+slippage = slip_input / 100
 
 # --- 3. 側邊欄控制項：多策略選擇與參數設定 ---
 st.sidebar.header("3. 選擇與設定回測策略")
