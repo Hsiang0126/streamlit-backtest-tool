@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 
 st.set_page_config(layout="wide", page_title="多市場與多策略回測工具")
 
-st.title("📈 多市場與多策略比較回測系統 (自訂欄位與顯示版)")
+st.title("📈 多市場與多策略比較回測系統 (支援幣別選擇與匯率轉換)")
 
 # --- 1. 側邊欄控制項：標的與市場 ---
 st.sidebar.header("1. 選擇標的與市場")
@@ -26,9 +26,13 @@ if "自訂輸入" in selected_preset:
 else:
     symbol = selected_preset.split(" ")[0].strip()
 
+# 幣別選擇與匯率設定
+currency_options = ["新台幣 (TWD)", "美元 (USD)"]
+user_currency = st.sidebar.selectbox("輸入資金的幣別", currency_options)
+
 # 資金與現金流設定
-initial_capital = st.sidebar.number_input("期初投入本金 ($)", value=100000, step=10000)
-monthly_inflow = st.sidebar.number_input("每月固定新增可投入資金 ($)", value=10000, step=1000)
+initial_capital = st.sidebar.number_input("期初投入本金", value=300000 if "TWD" in user_currency else 10000, step=10000)
+monthly_inflow = st.sidebar.number_input("每月固定新增可投入資金", value=30000 if "TWD" in user_currency else 1000, step=1000)
 reinvest_dividends = st.sidebar.checkbox("計入股利再投入 (還原總報酬股價)", value=True)
 
 time_option = st.sidebar.selectbox("回測時間跨度", ["近 5 年", "近 10 年", "近 20 年", "自訂日期範圍"], index=2)
@@ -99,7 +103,7 @@ if "定期定額 (DCA)" in selected_strategies:
     if dca_freq == "自訂交易日數":
         custom_dca_days = int(st.sidebar.number_input("相隔交易日數", value=20, min_value=1))
         
-    dca_val = float(st.sidebar.number_input("定額扣款金額 ($)", value=10000, min_value=100))
+    dca_val = float(st.sidebar.number_input("定額扣款金額", value=10000 if "TWD" in user_currency else 1000, min_value=100))
     params["DCA"] = {
         "freq": dca_freq,
         "val": dca_val,
@@ -111,7 +115,7 @@ if "跌破均線且創新低買入" in selected_strategies:
     params["DipDCA"] = {
         "sma_period": int(st.sidebar.number_input("基準均線 (週期數)", value=60, min_value=1)),
         "timeframe": st.sidebar.selectbox("均線單位 (DipDCA)", ["週線 (Weekly)", "日線 (Daily)"], key="dip_tf"),
-        "buy_amount": float(st.sidebar.number_input("每次觸發買入金額 ($)", value=10000, min_value=100)),
+        "buy_amount": float(st.sidebar.number_input("每次觸發買入金額", value=10000 if "TWD" in user_currency else 1000, min_value=100)),
         "min_interval": int(st.sidebar.number_input("買入最小間隔 (交易日)", value=1, min_value=1))
     }
 
@@ -187,13 +191,14 @@ selected_cols = st.sidebar.multiselect(
     default=all_metrics_cols
 )
 
-# --- 數據獲取與均線計算工具 ---
+# --- 數據獲取與匯率處理工具 ---
 @st.cache_data
-def load_data(ticker, market_type, start, end, auto_adjust=True):
+def load_data_and_fx(ticker, market_type, start, end, auto_adjust=True, user_curr="新台幣 (TWD)"):
     formatted_ticker = ticker
     if market_type == "台股" and not ticker.endswith(".TW") and not ticker.endswith(".TWO"):
         formatted_ticker = ticker + ".TW"
     
+    # 1. 抓取標的資產資料
     df = yf.download(formatted_ticker, start=start, end=end, auto_adjust=auto_adjust)
     
     if isinstance(df.columns, pd.MultiIndex):
@@ -208,10 +213,10 @@ def load_data(ticker, market_type, start, end, auto_adjust=True):
     res_df = pd.DataFrame({'close': close_data, 'high': high_data, 'low': low_data}).dropna()
     res_df = res_df[res_df['close'] > 1.0]
     
+    # 2. 解決 0050.TW 結構性斷層
     if market_type == "台股":
         pct = res_df['close'].pct_change()
         crash_points = res_df.index[pct < -0.30]
-        
         for crash_idx in crash_points:
             loc = res_df.index.get_loc(crash_idx)
             if loc > 0:
@@ -226,7 +231,33 @@ def load_data(ticker, market_type, start, end, auto_adjust=True):
                     res_df.iloc[:loc, high_col] *= ratio
                     res_df.iloc[:loc, low_col] *= ratio
                     
-    return res_df.dropna()
+    res_df = res_df.dropna()
+    
+    # 3. 匯率處理：若標的是美股或加密貨幣（以美金計價），且使用者選擇投入新台幣 (TWD)，則下載 USDTWD=X 進行匯率換算
+    is_asset_usd = (market_type == "美股" or market_type == "加密貨幣")
+    
+    if is_asset_usd and "TWD" in user_curr:
+        fx_df = yf.download("USDTWD=X", start=start, end=end, auto_adjust=True)
+        if isinstance(fx_df.columns, pd.MultiIndex):
+            fx_close = fx_df['Close'].iloc[:, 0] if isinstance(fx_df['Close'], pd.DataFrame) else fx_df['Close']
+        else:
+            fx_close = fx_df['Close']
+            
+        fx_series = fx_close.reindex(res_df.index, method='ffill').fillna(30.0)
+        
+        # 將資產價格從美金換算為台幣價格
+        res_df['close'] = res_df['close'] * fx_series
+        res_df['high'] = res_df['high'] * fx_series
+        res_df['low'] = res_df['low'] * fx_series
+        currency_symbol = "NT$"
+    elif is_asset_usd and "USD" in user_curr:
+        currency_symbol = "$"
+    elif not is_asset_usd and "TWD" in user_curr:
+        currency_symbol = "NT$"
+    else:
+        currency_symbol = "$"
+        
+    return res_df, currency_symbol
 
 def calculate_ma(df, period, timeframe="日線 (Daily)"):
     if timeframe == "週線 (Weekly)":
@@ -538,8 +569,8 @@ def generate_signal(df, strat_name, p):
 
     return data['signal']
 
-# --- 績效指標計算 (扣除剩餘現金計算真實投入本金) ---
-def eval_performance(df):
+# --- 績效指標計算 ---
+def eval_performance(df, curr_symbol):
     total_days = len(df)
     if total_days < 2:
         return {}
@@ -549,13 +580,9 @@ def eval_performance(df):
     final_stock_val = df['stock_value'].iloc[-1]
     final_cash = df['cash'].iloc[-1]
     
-    # 核心邏輯修正：實際總投入本金 = 總撥款金額 - 最終未使用的剩餘現金
     actual_invested = gross_invested - final_cash
-    
     net_profit = final_stock_val - actual_invested
     total_return = net_profit / actual_invested if actual_invested > 0 else 0.0
-    
-    # CAGR 年化報酬基於實際投入的本金進行計算
     cagr = (((final_stock_val / actual_invested) ** (252 / total_days)) - 1) if actual_invested > 0 else 0.0
     
     cum_max = df['equity_net'].cummax()
@@ -568,10 +595,10 @@ def eval_performance(df):
         trade_count = int(df['trades'])
         
     return {
-        "實際總投入本金": f"${actual_invested:,.0f}",
-        "最終資產金額": f"${final_value:,.0f}",
-        "最終持股市值": f"${final_stock_val:,.0f}",
-        "最終剩餘現金": f"${final_cash:,.0f}",
+        "實際總投入本金": f"{curr_symbol}{actual_invested:,.0f}",
+        "最終資產金額": f"{curr_symbol}{final_value:,.0f}",
+        "最終持股市值": f"{curr_symbol}{final_stock_val:,.0f}",
+        "最終剩餘現金": f"{curr_symbol}{final_cash:,.0f}",
         "總報酬率": f"{total_return:.2%}",
         "CAGR 年化報酬": f"{cagr:.2%}",
         "Max Drawdown (MDD)": f"{mdd:.2%}",
@@ -584,11 +611,11 @@ def eval_performance(df):
 
 # --- 執行與顯示 ---
 if st.sidebar.button("開始多策略回測與對比"):
-    with st.spinner("正在進行多策略回測運算..."):
-        data = load_data(symbol, market, start_date, end_date, auto_adjust=reinvest_dividends)
+    with st.spinner("正在進行多策略回測與匯率換算運算..."):
+        data, curr_sym = load_data_and_fx(symbol, market, start_date, end_date, auto_adjust=reinvest_dividends, user_curr=user_currency)
         if len(data) > 0:
             bh_res = run_buy_and_hold_with_inflow(data, initial_capital, monthly_inflow, fee_rate, slippage)
-            bh_m = eval_performance(bh_res)
+            bh_m = eval_performance(bh_res, curr_sym)
             
             fig = go.Figure()
             metrics_display_list = []
@@ -596,7 +623,6 @@ if st.sidebar.button("開始多策略回測與對比"):
             
             dividend_label = " (含息總報酬)" if reinvest_dividends else " (未還原價格)"
             
-            # 全表字典資料
             bh_full_dict = {
                 "策略名稱": f"買入持有 (Buy & Hold){dividend_label}",
                 "實際總投入本金": bh_m["實際總投入本金"],
@@ -608,11 +634,10 @@ if st.sidebar.button("開始多策略回測與對比"):
                 "Max Drawdown (MDD)": bh_m["Max Drawdown (MDD)"],
                 "累積交易次數": bh_m["累積交易次數"]
             }
-            # 僅保留使用者勾選的欄位
             filtered_bh_dict = {k: v for k, v in bh_full_dict.items() if k == "策略名稱" or k in selected_cols}
             metrics_display_list.append(filtered_bh_dict)
             
-            fig.add_trace(go.Scatter(x=bh_res.index, y=bh_res['portfolio_value'], name=f"買入持有 (${bh_m['_raw_final']:,.0f})", line=dict(color='gray', dash='dash')))
+            fig.add_trace(go.Scatter(x=bh_res.index, y=bh_res['portfolio_value'], name=f"買入持有 ({curr_sym}{bh_m['_raw_final']:,.0f})", line=dict(color='gray', dash='dash')))
             
             for strat in selected_strategies:
                 if strat == "定期定額 (DCA)":
@@ -631,7 +656,7 @@ if st.sidebar.button("開始多策略回測與對比"):
                     sig = generate_signal(data, strat, params.get(p_key, {}))
                     res = run_backtest(data, sig, fee_rate, tax_rate, slippage, initial_capital, monthly_inflow)
                 
-                m = eval_performance(res)
+                m = eval_performance(res, curr_sym)
                 strategy_raw_data[strat] = m
                 
                 strat_full_dict = {
@@ -648,9 +673,9 @@ if st.sidebar.button("開始多策略回測與對比"):
                 filtered_strat_dict = {k: v for k, v in strat_full_dict.items() if k == "策略名稱" or k in selected_cols}
                 metrics_display_list.append(filtered_strat_dict)
                 
-                fig.add_trace(go.Scatter(x=res.index, y=res['portfolio_value'], name=f"{strat} (${m['_raw_final']:,.0f})", line=dict(width=2)))
+                fig.add_trace(go.Scatter(x=res.index, y=res['portfolio_value'], name=f"{strat} ({curr_sym}{m['_raw_final']:,.0f})", line=dict(width=2)))
             
-            fig.update_layout(title=f"{symbol} 資產總額成長曲線 ($)", xaxis_title="日期", yaxis_title="資產總額 ($)", height=500)
+            fig.update_layout(title=f"{symbol} 資產總額成長曲線 ({curr_sym})", xaxis_title="日期", yaxis_title=f"資產總額 ({curr_sym})", height=500)
             
             st.subheader("📊 各策略與 Buy & Hold 績效與金額對比表")
             if selected_cols:
@@ -662,7 +687,7 @@ if st.sidebar.button("開始多策略回測與對比"):
             st.plotly_chart(fig, use_container_width=True)
             
             st.subheader("💡 戰術診斷與現金流分析")
-            diagnostic_text = f"期初本金 **${initial_capital:,.0f}** 搭配每月注資 **${monthly_inflow:,.0f}**，在 Buy & Hold 策略中實際投入本金為 **{bh_m['實際總投入本金']}**：\n"
+            diagnostic_text = f"期初本金 **{curr_sym}{initial_capital:,.0f}** 搭配每月注資 **{curr_sym}{monthly_inflow:,.0f}**，在 Buy & Hold 策略中實際投入本金為 **{bh_m['實際總投入本金']}**：\n"
             diagnostic_text += f"* **買入持有 (Buy & Hold)** 最終變成了 **{bh_m['最終資產金額']}**（總報酬率 **{bh_m['總報酬率']}**）。\n\n"
             
             for strat, m in strategy_raw_data.items():
@@ -670,7 +695,7 @@ if st.sidebar.button("開始多策略回測與對比"):
                 diagnostic_text += f"* **實際投入本金**: **{m['實際總投入本金']}**（剩餘未投入現金 **{m['最終剩餘現金']}**）。\n"
                 diagnostic_text += f"* **最終資產**: **{m['最終資產金額']}**（包含持股市值 **{m['最終持股市值']}** + 剩餘現金 **{m['最終剩餘現金']}**）。\n"
                 if strat == "跌破均線且創新低買入":
-                    diagnostic_text += f"* **抄底機制**: 僅在「價格低於均線 ＋ 價格創出該次跌破區間新低」時觸發建倉，全期共精準抄底 **{m['_raw_trades']} 次**。\n"
+                    diagnostic_text += f"* **抄底機制**: 僅在標的低於均線且創區間新低時觸發，全期共精準抄底 **{m['_raw_trades']} 次**。\n"
                 diagnostic_text += "\n"
             st.markdown(diagnostic_text)
         else:
