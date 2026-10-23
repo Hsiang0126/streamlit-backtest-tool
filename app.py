@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 
 st.set_page_config(layout="wide", page_title="多市場與多策略回測工具")
 
-st.title("📈 多市場與多策略比較回測系統 (正統 DCA 分期版)")
+st.title("📈 多市場與多策略比較回測系統 (完整邏輯修正版)")
 
 # --- 1. 側邊欄控制項：標的與市場 ---
 st.sidebar.header("1. 選擇標的與市場")
@@ -165,7 +165,7 @@ def load_data(ticker, market_type, start, end):
     res_df = pd.DataFrame({'close': close_data, 'high': high_data, 'low': low_data})
     return res_df.dropna()
 
-# --- 正統 DCA 定期定額回測引擎 ---
+# --- 正統 DCA 定期定額回測引擎 (修正動態持倉 Bug) ---
 def run_dca_backtest(df, total_capital, n_periods, fee, slip):
     data = df.copy()
     total_days = len(data)
@@ -176,6 +176,7 @@ def run_dca_backtest(df, total_capital, n_periods, fee, slip):
     cash = total_capital
     shares = 0.0
     portfolio_values = []
+    daily_positions = []
     trades_count = 0
     
     for i in range(len(data)):
@@ -187,13 +188,17 @@ def run_dca_backtest(df, total_capital, n_periods, fee, slip):
             cash -= dca_amount
             trades_count += 1
             
-        current_value = cash + (shares * data['close'].iloc[i])
+        current_stock_val = shares * data['close'].iloc[i]
+        current_value = cash + current_stock_val
         portfolio_values.append(current_value)
+        
+        pos_ratio = (current_stock_val / current_value) if current_value > 0 else 0.0
+        daily_positions.append(pos_ratio)
         
     data['portfolio_value'] = portfolio_values
     data['equity_net'] = data['portfolio_value'] / total_capital
     data['strategy_ret'] = data['equity_net'].pct_change().fillna(0)
-    data['position'] = (shares * data['close']) / data['portfolio_value']
+    data['position'] = daily_positions
     data['trades'] = trades_count
     return data
 
@@ -275,13 +280,15 @@ def generate_signal(df, strat_name, p):
 
     return data['signal']
 
-# --- 績效指標計算 ---
+# --- 績效指標計算 (修正交易次數與邊界防護) ---
 def eval_performance(df, init_capital):
     ret = df['strategy_ret']
     total_days = len(df)
     if total_days < 2:
         return {}
-    cagr = (df['equity_net'].iloc[-1]) ** (252 / total_days) - 1
+        
+    final_equity = max(1e-6, df['equity_net'].iloc[-1])
+    cagr = (final_equity) ** (252 / total_days) - 1
     vol = ret.std() * np.sqrt(252)
     sharpe = (ret.mean() * 252) / vol if vol != 0 else 0
     
@@ -289,7 +296,11 @@ def eval_performance(df, init_capital):
     dd = (df['equity_net'] - cum_max) / cum_max
     mdd = dd.min()
     
-    trade_count = int(df['trades'].iloc[-1]) if isinstance(df['trades'], pd.Series) else int(df['trades'].sum())
+    if isinstance(df['trades'], pd.Series):
+        trade_count = int(df['trades'].sum())
+    else:
+        trade_count = int(df['trades'])
+        
     exposure_time = df['position'].mean()
     final_value = df['portfolio_value'].iloc[-1]
     
