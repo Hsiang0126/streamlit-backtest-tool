@@ -192,14 +192,22 @@ def load_data(ticker, market_type, start, end):
         low_data = df['Low'] if 'Low' in df else close_data
         
     res_df = pd.DataFrame({'close': close_data, 'high': high_data, 'low': low_data}).dropna()
-    res_df = res_df[res_df['close'] > 1.0]  # 數據清洗：自動剔除歷史極端壞點
+    res_df = res_df[res_df['close'] > 1.0]
     
-    # 台股異常壞點自動過濾（台股法定單日漲跌幅上限為 10%，若單日變動 > 15% 必為 Yahoo 壞點數據）
+    # 解決 Yahoo Finance 0050.TW 2014 年底的結構性階梯斷層
     if market_type == "台股":
-        daily_change = res_df['close'].pct_change().abs()
-        res_df.loc[daily_change > 0.15, 'close'] = np.nan
-        res_df['close'] = res_df['close'].ffill()
-        
+        pct = res_df['close'].pct_change()
+        crash_mask = pct < -0.30  # 偵測非正常市場波動的巨幅斷層 (>30%)
+        if crash_mask.any():
+            crash_idx = crash_mask.idxmax()
+            loc = res_df.index.get_loc(crash_idx)
+            if loc > 0:
+                # 計算斷層前後銜接比例
+                ratio = res_df['close'].iloc[loc] / res_df['close'].iloc[loc - 1]
+                # 將斷層點之前的歷史價格全數進行等比例縮放平滑接軌
+                close_col_idx = res_df.columns.get_loc('close')
+                res_df.iloc[:loc, close_col_idx] = res_df['close'].iloc[:loc] * ratio
+                
     return res_df.dropna()
 
 def calculate_ma(df, period, timeframe="日線 (Daily)"):
