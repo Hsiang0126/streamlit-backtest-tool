@@ -34,17 +34,23 @@ else:  # 加密貨幣
 
 # --- 數據獲取模組 ---
 @st.cache_data
+# --- 數據獲取模組 (修正版) ---
+@st.cache_data
 def load_data(ticker, market_type, start, end):
     formatted_ticker = ticker
     if market_type == "台股" and not ticker.endswith(".TW") and not ticker.endswith(".TWO"):
         formatted_ticker = ticker + ".TW"
     
     df = yf.download(formatted_ticker, start=start, end=end)
+    
+    # 相容 yfinance 新舊版本 MultiIndex 格式
     if isinstance(df.columns, pd.MultiIndex):
-        df = df['Close'].to_frame(name='close')
+        close_data = df['Close'].iloc[:, 0] if isinstance(df['Close'], pd.DataFrame) else df['Close']
     else:
-        df = df[['Close']].rename(columns={'Close': 'close'})
-    return df.dropna()
+        close_data = df['Close']
+        
+    res_df = pd.DataFrame({'close': close_data})
+    return res_df.dropna()
 
 # --- 核心回測引擎 (含成本計算) ---
 def run_backtest_with_costs(df, fast_p=20, slow_p=60, fee=0.0, tax=0.0, slip=0.0):
