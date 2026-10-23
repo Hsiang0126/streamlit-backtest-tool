@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 
 st.set_page_config(layout="wide", page_title="多市場與多策略回測工具")
 
-st.title("📈 多市場與多策略比較回測系統 (彈性時間與精簡策略版)")
+st.title("📈 多市場與多策略比較回測系統 (語法修正版)")
 
 # --- 1. 側邊欄控制項：標的與市場 ---
 st.sidebar.header("1. 選擇標的與市場")
@@ -78,7 +78,7 @@ fee_rate = fee_input / 100
 tax_rate = tax_input / 100
 slippage = slip_input / 100
 
-# --- 3. 側邊欄控制項：精簡策略列表 (已刪除布林通道與海龜策略) ---
+# --- 3. 側邊欄控制項：精簡策略列表 ---
 st.sidebar.header("3. 選擇與設定回測策略")
 available_strats = [
     "定期定額 (DCA)",
@@ -490,7 +490,7 @@ def run_backtest(df, signal_series, fee, tax, slip, init_capital, monthly_inflow
     data['trades'] = daily_trades
     return data
 
-# --- 策略訊號產生器 ---
+# --- 策略訊號產生器 (已修正括號語法) ---
 def generate_signal(df, strat_name, p):
     data = df.copy()
     
@@ -618,7 +618,7 @@ if st.sidebar.button("開始多策略回測與對比"):
                     d_interval = params["DipDCA"]["min_interval"]
                     res = run_dip_dca_backtest(data, initial_capital, monthly_inflow, d_sma, d_tf, d_buy_amt, d_interval, fee_rate, slippage)
                 else:
-                    p_key = "PriceSMA" if "突破" in strat else ("SMA" if "SMA" in strat else ("RSI" if "RSI" in strat else ("MACD" if "MACD" in strat else ("KD" if "KD" in strat else "Donchian")))))
+                    p_key = "PriceSMA" if "突破" in strat else ("SMA" if "SMA" in strat else ("RSI" if "RSI" in strat else ("MACD" if "MACD" in strat else "KD")))
                     sig = generate_signal(data, strat, params.get(p_key, {}))
                     res = run_backtest(data, sig, fee_rate, tax_rate, slippage, initial_capital, monthly_inflow)
                 
