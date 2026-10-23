@@ -6,23 +6,25 @@ import plotly.graph_objects as go
 
 st.set_page_config(layout="wide", page_title="多市場與多策略回測工具")
 
-st.title("📈 多資產與多策略平行回測系統 (多資產比較版)")
+st.title("📈 多市場與多策略比較回測系統 (語法修正版)")
 
 # --- 1. 側邊欄控制項：標的與市場 ---
-st.sidebar.header("1. 選擇標的與市場 (支援多選)")
+st.sidebar.header("1. 選擇標的與市場")
 market = st.sidebar.selectbox("市場類別", ["美股", "台股", "加密貨幣"])
 
 preset_options = {
-    "台股": ["0050.TW (元大台灣50)", "2330.TW (台積電)", "0056.TW (元大高股息)", "2317.TW (鴻海)", "2454.TW (聯發科)"],
-    "美股": ["QQQ (納斯達克100)", "AAPL (蘋果)", "NVDA (輝達)", "SPY (S&P 500)", "TSLA (特斯拉)", "MSFT (微軟)"],
-    "加密貨幣": ["BTC-USD (比特幣)", "ETH-USD (乙太幣)", "SOL-USD (索拉納)", "BNB-USD (幣安幣)"]
+    "台股": ["0050 (元大台灣50)", "2330 (台積電)", "0056 (元大高股息)", "2317 (鴻海)", "2454 (聯發科)", "自訂輸入..."],
+    "美股": ["QQQ (納斯達克100)", "AAPL (蘋果)", "NVDA (輝達)", "SPY (S&P 500)", "TSLA (特斯拉)", "MSFT (微軟)", "自訂輸入..."],
+    "加密貨幣": ["BTC-USD (比特幣)", "ETH-USD (乙太幣)", "SOL-USD (索拉納)", "BNB-USD (幣安幣)", "自訂輸入..."]
 }
 
-selected_symbols = st.sidebar.multiselect(
-    "選擇要回測的標的（可複選多個）",
-    preset_options[market],
-    default=[preset_options[market][0]]
-)
+selected_preset = st.sidebar.selectbox("選擇熱門標的（可打字搜尋）", preset_options[market])
+
+if "自訂輸入" in selected_preset:
+    symbol_input = st.sidebar.text_input("輸入自訂代碼", value="QQQ" if market == "美股" else ("0050" if market == "台股" else "BTC-USD"))
+    symbol = symbol_input.strip().upper()
+else:
+    symbol = selected_preset.split(" ")[0].strip()
 
 # 幣別選擇與匯率設定
 currency_options = ["新台幣 (TWD)", "美元 (USD)"]
@@ -33,7 +35,7 @@ initial_capital = st.sidebar.number_input("期初投入本金", value=300000 if 
 monthly_inflow = st.sidebar.number_input("每月固定新增可投入資金", value=30000 if "TWD" in user_currency else 1000, step=1000)
 reinvest_dividends = st.sidebar.checkbox("計入股利再投入 (還原總報酬股價)", value=True)
 
-# 彈性回測時間跨度設定
+# 彈性回測時間跨度設定 (已新增近3年並解鎖自訂日期範圍限制)
 time_option = st.sidebar.selectbox("回測時間跨度", ["近 3 年", "近 5 年", "近 10 年", "近 20 年", "自訂日期範圍"], index=2)
 today = pd.to_datetime("today")
 
@@ -58,7 +60,7 @@ st.sidebar.header("2. 設定交易成本與滑點")
 def get_default_costs(market_type, ticker_symbol):
     if market_type == "台股":
         clean_symbol = ticker_symbol.strip().upper()
-        if "00" in clean_symbol:
+        if clean_symbol.startswith("00"):
             return 0.071, 0.10, 0.02
         else:
             return 0.071, 0.30, 0.03
@@ -67,8 +69,7 @@ def get_default_costs(market_type, ticker_symbol):
     else:
         return 0.10, 0.00, 0.10
 
-sample_symbol = selected_symbols[0] if selected_symbols else "QQQ"
-auto_fee, auto_tax, auto_slip = get_default_costs(market, sample_symbol)
+auto_fee, auto_tax, auto_slip = get_default_costs(market, symbol)
 fee_input = st.sidebar.number_input("手續費率 (%)", value=auto_fee, step=0.01, format="%.3f")
 tax_input = st.sidebar.number_input("賣出證交稅 (%)", value=auto_tax, step=0.01, format="%.2f")
 slip_input = st.sidebar.number_input("單邊預估滑點 (%)", value=auto_slip, step=0.01, format="%.2f")
@@ -77,10 +78,9 @@ fee_rate = fee_input / 100
 tax_rate = tax_input / 100
 slippage = slip_input / 100
 
-# --- 3. 側邊欄控制項：單一策略設定 ---
-st.sidebar.header("3. 選擇要測試的單一策略")
+# --- 3. 側邊欄控制項：精簡策略列表 ---
+st.sidebar.header("3. 選擇與設定回測策略")
 available_strats = [
-    "買入持有 (Buy & Hold)",
     "定期定額 (DCA)",
     "跌破均線且創新低買入",
     "價格突破均線買入/跌破賣出",
@@ -90,19 +90,29 @@ available_strats = [
     "KD 隨機指標"
 ]
 
-chosen_strategy = st.sidebar.selectbox("選擇回測策略", available_strats)
+selected_strategies = st.sidebar.multiselect(
+    "選擇要比較的策略（可多選）",
+    available_strats,
+    default=["定期定額 (DCA)", "跌破均線且創新低買入", "價格突破均線買入/跌破賣出"]
+)
 
 params = {}
-if chosen_strategy == "定期定額 (DCA)":
+
+if "定期定額 (DCA)" in selected_strategies:
     st.sidebar.markdown("**[定期定額 (DCA) 設定]**")
     dca_freq = st.sidebar.selectbox("扣款頻率", ["每月 (Monthly)", "每週 (Weekly)", "雙週 (Bi-weekly)", "自訂交易日數"])
     custom_dca_days = 20
     if dca_freq == "自訂交易日數":
         custom_dca_days = int(st.sidebar.number_input("相隔交易日數", value=20, min_value=1))
+        
     dca_val = float(st.sidebar.number_input("定額扣款金額", value=10000 if "TWD" in user_currency else 1000, min_value=100))
-    params["DCA"] = {"freq": dca_freq, "val": dca_val, "custom_days": custom_dca_days}
+    params["DCA"] = {
+        "freq": dca_freq,
+        "val": dca_val,
+        "custom_days": custom_dca_days
+    }
 
-elif chosen_strategy == "跌破均線且創新低買入":
+if "跌破均線且創新低買入" in selected_strategies:
     st.sidebar.markdown("**[跌破均線創新低買入設定]**")
     params["DipDCA"] = {
         "sma_period": int(st.sidebar.number_input("基準均線 (週期數)", value=60, min_value=1)),
@@ -111,14 +121,14 @@ elif chosen_strategy == "跌破均線且創新低買入":
         "min_interval": int(st.sidebar.number_input("買入最小間隔 (交易日)", value=1, min_value=1))
     }
 
-elif chosen_strategy == "價格突破均線買入/跌破賣出":
+if "價格突破均線買入/跌破賣出" in selected_strategies:
     st.sidebar.markdown("**[價格突破均線策略]**")
     params["PriceSMA"] = {
         "period": int(st.sidebar.number_input("基準均線 (週期數)", value=20, min_value=1)),
         "timeframe": st.sidebar.selectbox("均線單位 (突破策略)", ["日線 (Daily)", "週線 (Weekly)"], key="price_tf")
     }
 
-elif chosen_strategy == "SMA 雙均線交叉":
+if "SMA 雙均線交叉" in selected_strategies:
     st.sidebar.markdown("**[SMA 雙均線]**")
     params["SMA"] = {
         "fast": int(st.sidebar.number_input("SMA 快線 (週期)", value=20)),
@@ -126,7 +136,7 @@ elif chosen_strategy == "SMA 雙均線交叉":
         "timeframe": st.sidebar.selectbox("均線單位 (雙均線)", ["日線 (Daily)", "週線 (Weekly)"], key="sma_tf")
     }
 
-elif chosen_strategy == "RSI 超買超賣":
+if "RSI 超買超賣" in selected_strategies:
     st.sidebar.markdown("**[RSI 策略]**")
     params["RSI"] = {
         "period": int(st.sidebar.number_input("RSI 週期", value=14)),
@@ -134,7 +144,7 @@ elif chosen_strategy == "RSI 超買超賣":
         "sell": st.sidebar.number_input("RSI 超買賣出 (高於)", value=70)
     }
 
-elif chosen_strategy == "MACD 柱狀圖/交叉":
+if "MACD 柱狀圖/交叉" in selected_strategies:
     st.sidebar.markdown("**[MACD 參數]**")
     params["MACD"] = {
         "fast": int(st.sidebar.number_input("MACD 快線", value=12)),
@@ -142,7 +152,7 @@ elif chosen_strategy == "MACD 柱狀圖/交叉":
         "signal": int(st.sidebar.number_input("MACD 訊號線", value=9))
     }
 
-elif chosen_strategy == "KD 隨機指標":
+if "KD 隨機指標" in selected_strategies:
     st.sidebar.markdown("**[KD 指標]**")
     params["KD"] = {
         "period": int(st.sidebar.number_input("KD RSV週期", value=9)),
@@ -169,10 +179,9 @@ selected_cols = st.sidebar.multiselect(
     default=all_metrics_cols
 )
 
-# --- 資料獲取與匯率處理工具 ---
+# --- 數據獲取與匯率處理工具 ---
 @st.cache_data
-def load_data_and_fx(ticker_raw, market_type, start, end, auto_adjust=True, user_curr="新台幣 (TWD)"):
-    ticker = ticker_raw.split(" ")[0].strip()
+def load_data_and_fx(ticker, market_type, start, end, auto_adjust=True, user_curr="新台幣 (TWD)"):
     formatted_ticker = ticker
     if market_type == "台股" and not ticker.endswith(".TW") and not ticker.endswith(".TWO"):
         formatted_ticker = ticker + ".TW"
@@ -209,6 +218,7 @@ def load_data_and_fx(ticker_raw, market_type, start, end, auto_adjust=True, user
                     res_df.iloc[:loc, low_col] *= ratio
                     
     res_df = res_df.dropna()
+    
     is_asset_usd = (market_type == "美股" or market_type == "加密貨幣")
     
     if is_asset_usd and "TWD" in user_curr:
@@ -217,7 +227,9 @@ def load_data_and_fx(ticker_raw, market_type, start, end, auto_adjust=True, user
             fx_close = fx_df['Close'].iloc[:, 0] if isinstance(fx_df['Close'], pd.DataFrame) else fx_df['Close']
         else:
             fx_close = fx_df['Close']
+            
         fx_series = fx_close.reindex(res_df.index, method='ffill').fillna(30.0)
+        
         res_df['close'] = res_df['close'] * fx_series
         res_df['high'] = res_df['high'] * fx_series
         res_df['low'] = res_df['low'] * fx_series
@@ -239,7 +251,7 @@ def calculate_ma(df, period, timeframe="日線 (Daily)"):
     else:
         return df['close'].rolling(period).mean()
 
-# --- 回測引擎模組 ---
+# --- 單筆買入持有 (含每月定期注資) ---
 def run_buy_and_hold_with_inflow(df, init_capital, monthly_inflow, fee, slip):
     data = df.copy()
     total_days = len(data)
@@ -249,18 +261,23 @@ def run_buy_and_hold_with_inflow(df, init_capital, monthly_inflow, fee, slip):
     cash = init_capital
     total_invested = init_capital
     shares = 0.0
-    portfolio_values, invested_history, cash_history, stock_val_history = [], [], [], []
+    portfolio_values = []
+    invested_history = []
+    cash_history = []
+    stock_val_history = []
     
     for i in range(total_days):
         if i > 0 and month_changed.iloc[i]:
             cash += monthly_inflow
             total_invested += monthly_inflow
+            
         if cash > 0:
             cost_factor = 1 + fee + slip
             buy_price = data['close'].iloc[i] * cost_factor
             bought_shares = cash / buy_price
             shares += bought_shares
             cash = 0.0
+            
         stock_val = shares * data['close'].iloc[i]
         current_value = cash + stock_val
         portfolio_values.append(current_value)
@@ -278,9 +295,11 @@ def run_buy_and_hold_with_inflow(df, init_capital, monthly_inflow, fee, slip):
     data['trades'] = 1
     return data
 
+# --- DCA 定期定額回測引擎 ---
 def run_dca_backtest_advanced(df, init_capital, monthly_inflow, freq_type, dca_amount, custom_days, fee, slip):
     data = df.copy()
     total_days = len(data)
+    
     month_series = pd.Series(data.index.month, index=data.index)
     month_changed = (month_series != month_series.shift(1))
     
@@ -294,19 +313,26 @@ def run_dca_backtest_advanced(df, init_capital, monthly_inflow, freq_type, dca_a
     else:
         step = max(1, int(custom_days))
         buy_mask = (pd.Series(range(total_days), index=data.index) % step == 0)
+        
     buy_indices = set(data.index[buy_mask])
     
     cash = init_capital
     total_invested = init_capital
     shares = 0.0
-    portfolio_values, invested_history, cash_history, stock_val_history, daily_positions = [], [], [], [], []
+    portfolio_values = []
+    invested_history = []
+    cash_history = []
+    stock_val_history = []
+    daily_positions = []
     daily_trades = [0] * total_days
     
     for i in range(total_days):
         current_date = data.index[i]
+        
         if i > 0 and month_changed.iloc[i]:
             cash += monthly_inflow
             total_invested += monthly_inflow
+            
         if current_date in buy_indices and cash > 0:
             actual_buy = min(cash, dca_amount)
             cost_factor = 1 + fee + slip
@@ -315,6 +341,7 @@ def run_dca_backtest_advanced(df, init_capital, monthly_inflow, freq_type, dca_a
             shares += bought_shares
             cash -= actual_buy
             daily_trades[i] = 1
+            
         current_stock_val = shares * data['close'].iloc[i]
         current_value = cash + current_stock_val
         portfolio_values.append(current_value)
@@ -334,27 +361,36 @@ def run_dca_backtest_advanced(df, init_capital, monthly_inflow, freq_type, dca_a
     data['trades'] = daily_trades
     return data
 
+# --- 跌破均線且創新低買入引擎 ---
 def run_dip_dca_backtest(df, init_capital, monthly_inflow, sma_period, timeframe, buy_amount, min_interval_days, fee, slip):
     data = df.copy()
     sma = calculate_ma(data, sma_period, timeframe)
     total_days = len(data)
+    
     month_series = pd.Series(data.index.month, index=data.index)
     month_changed = (month_series != month_series.shift(1))
     
     cash = init_capital
     total_invested = init_capital
     shares = 0.0
-    portfolio_values, invested_history, cash_history, stock_val_history, daily_positions = [], [], [], [], []
+    portfolio_values = []
+    invested_history = []
+    cash_history = []
+    stock_val_history = []
+    daily_positions = []
     daily_trades = [0] * total_days
     last_buy_idx = -min_interval_days
+    
     min_price_in_dip = float('inf')
     
     for i in range(total_days):
         if i > 0 and month_changed.iloc[i]:
             cash += monthly_inflow
             total_invested += monthly_inflow
+            
         price = data['close'].iloc[i]
         sma_val = sma.iloc[i]
+        
         is_below_sma = not np.isnan(sma_val) and (price < sma_val)
         
         if is_below_sma:
@@ -391,23 +427,29 @@ def run_dip_dca_backtest(df, init_capital, monthly_inflow, sma_period, timeframe
     data['trades'] = daily_trades
     return data
 
+# --- 一般擇時策略回測引擎 ---
 def run_backtest(df, signal_series, fee, tax, slip, init_capital, monthly_inflow):
     data = df.copy()
     total_days = len(data)
     month_series = pd.Series(data.index.month, index=data.index)
     month_changed = (month_series != month_series.shift(1))
+    
     position = signal_series.shift(1).fillna(0)
     
     cash = init_capital
     total_invested = init_capital
     shares = 0.0
-    portfolio_values, invested_history, cash_history, stock_val_history = [], [], [], []
+    portfolio_values = []
+    invested_history = []
+    cash_history = []
+    stock_val_history = []
     daily_trades = [0] * total_days
     
     for i in range(total_days):
         if i > 0 and month_changed.iloc[i]:
             cash += monthly_inflow
             total_invested += monthly_inflow
+            
         pos = position.iloc[i]
         prev_pos = position.iloc[i-1] if i > 0 else 0.0
         price = data['close'].iloc[i]
@@ -448,17 +490,21 @@ def run_backtest(df, signal_series, fee, tax, slip, init_capital, monthly_inflow
     data['trades'] = daily_trades
     return data
 
+# --- 策略訊號產生器 (已修正括號語法) ---
 def generate_signal(df, strat_name, p):
     data = df.copy()
+    
     if strat_name == "價格突破均線買入/跌破賣出":
         tf = p.get('timeframe', '日線 (Daily)')
         sma = calculate_ma(data, p['period'], tf)
         data['signal'] = (data['close'] > sma).astype(int)
+        
     elif strat_name == "SMA 雙均線交叉":
         tf = p.get('timeframe', '日線 (Daily)')
         fast_m = calculate_ma(data, p['fast'], tf)
         slow_m = calculate_ma(data, p['slow'], tf)
         data['signal'] = (fast_m > slow_m).astype(int)
+        
     elif strat_name == "RSI 超買超賣":
         delta = data['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(p['period']).mean()
@@ -469,12 +515,14 @@ def generate_signal(df, strat_name, p):
         sig[rsi < p['buy']] = 1
         sig[rsi > p['sell']] = 0
         data['signal'] = sig.ffill().fillna(0).astype(int)
+        
     elif strat_name == "MACD 柱狀圖/交叉":
         ema_fast = data['close'].ewm(span=p['fast'], adjust=False).mean()
         ema_slow = data['close'].ewm(span=p['slow'], adjust=False).mean()
         macd = ema_fast - ema_slow
         signal = macd.ewm(span=p['signal'], adjust=False).mean()
         data['signal'] = (macd > signal).astype(int)
+        
     elif strat_name == "KD 隨機指標":
         low_min = data['low'].rolling(p['period']).min()
         high_max = data['high'].rolling(p['period']).max()
@@ -484,12 +532,15 @@ def generate_signal(df, strat_name, p):
         sig[k < p['buy_k']] = 1
         sig[k > p['sell_k']] = 0
         data['signal'] = sig.ffill().fillna(0).astype(int)
+
     return data['signal']
 
+# --- 績效指標計算 ---
 def eval_performance(df, curr_symbol):
     total_days = len(df)
     if total_days < 2:
         return {}
+        
     gross_invested = df['total_invested'].iloc[-1]
     final_value = df['portfolio_value'].iloc[-1]
     final_stock_val = df['stock_value'].iloc[-1]
@@ -525,72 +576,93 @@ def eval_performance(df, curr_symbol):
     }
 
 # --- 執行與顯示 ---
-if st.sidebar.button("開始多資產策略回測"):
-    if not selected_symbols:
-        st.error("請至少選擇一個回測標的！")
-    else:
-        with st.spinner("正在進行多資產平行回測運算..."):
+if st.sidebar.button("開始多策略回測與對比"):
+    with st.spinner("正在進行多策略回測與匯率換算運算..."):
+        data, curr_sym = load_data_and_fx(symbol, market, start_date, end_date, auto_adjust=reinvest_dividends, user_curr=user_currency)
+        if len(data) > 0:
+            bh_res = run_buy_and_hold_with_inflow(data, initial_capital, monthly_inflow, fee_rate, slippage)
+            bh_m = eval_performance(bh_res, curr_sym)
+            
             fig = go.Figure()
             metrics_display_list = []
+            strategy_raw_data = {}
             
             dividend_label = " (含息總報酬)" if reinvest_dividends else " (未還原價格)"
             
-            for symbol_item in selected_symbols:
-                data, curr_sym = load_data_and_fx(symbol_item, market, start_date, end_date, auto_adjust=reinvest_dividends, user_curr=user_currency)
-                if len(data) > 0:
-                    # 根據使用者選擇的策略套用對應引擎
-                    if chosen_strategy == "買入持有 (Buy & Hold)":
-                        res = run_buy_and_hold_with_inflow(data, initial_capital, monthly_inflow, fee_rate, slippage)
-                    elif chosen_strategy == "定期定額 (DCA)":
-                        d_freq = params["DCA"]["freq"]
-                        d_val = params["DCA"]["val"]
-                        d_custom = params["DCA"]["custom_days"]
-                        res = run_dca_backtest_advanced(data, initial_capital, monthly_inflow, d_freq, d_val, d_custom, fee_rate, slippage)
-                    elif chosen_strategy == "跌破均線且創新低買入":
-                        d_sma = params["DipDCA"]["sma_period"]
-                        d_tf = params["DipDCA"]["timeframe"]
-                        d_buy_amt = params["DipDCA"]["buy_amount"]
-                        d_interval = params["DipDCA"]["min_interval"]
-                        res = run_dip_dca_backtest(data, initial_capital, monthly_inflow, d_sma, d_tf, d_buy_amt, d_interval, fee_rate, slippage)
-                    else:
-                        p_key = "PriceSMA" if "突破" in chosen_strategy else ("SMA" if "SMA" in chosen_strategy else ("RSI" in chosen_strategy and "RSI" or ("MACD" in chosen_strategy and "MACD" or "KD")))
-                        # 簡單對應 key
-                        if "突破" in chosen_strategy: p_key = "PriceSMA"
-                        elif "雙均線" in chosen_strategy: p_key = "SMA"
-                        elif "RSI" in chosen_strategy: p_key = "RSI"
-                        elif "MACD" in chosen_strategy: p_key = "MACD"
-                        elif "KD" in chosen_strategy: p_key = "KD"
-                        
-                        sig = generate_signal(data, chosen_strategy, params.get(p_key, {}))
-                        res = run_backtest(data, sig, fee_rate, tax_rate, slippage, initial_capital, monthly_inflow)
-                    
-                    m = eval_performance(res, curr_sym)
-                    
-                    row_dict = {
-                        "資產標的": f"{symbol_item}",
-                        "實際總投入本金": m["實際總投入本金"],
-                        "最終資產金額": m["最終資產金額"],
-                        "最終持股市值": m["最終持股市值"],
-                        "最終剩餘現金": m["最終剩餘現金"],
-                        "總報酬率": m["總報酬率"],
-                        "CAGR 年化報酬": m["CAGR 年化報酬"],
-                        "Max Drawdown (MDD)": m["Max Drawdown (MDD)"],
-                        "累積交易次數": m["累積交易次數"]
-                    }
-                    filtered_dict = {k: v for k, v in row_dict.items() if k == "資產標的" or k in selected_cols}
-                    metrics_display_list.append(filtered_dict)
-                    
-                    fig.add_trace(go.Scatter(x=res.index, y=res['portfolio_value'], name=f"{symbol_item} ({curr_sym}{m['_raw_final']:,.0f})", line=dict(width=2)))
+            bh_full_dict = {
+                "策略名稱": f"買入持有 (Buy & Hold){dividend_label}",
+                "實際總投入本金": bh_m["實際總投入本金"],
+                "最終資產金額": bh_m["最終資產金額"],
+                "最終持股市值": bh_m["最終持股市值"],
+                "最終剩餘現金": bh_m["最終剩餘現金"],
+                "總報酬率": bh_m["總報酬率"],
+                "CAGR 年化報酬": bh_m["CAGR 年化報酬"],
+                "Max Drawdown (MDD)": bh_m["Max Drawdown (MDD)"],
+                "累積交易次數": bh_m["累積交易次數"]
+            }
+            filtered_bh_dict = {k: v for k, v in bh_full_dict.items() if k == "策略名稱" or k in selected_cols}
+            metrics_display_list.append(filtered_bh_dict)
+            
+            fig.add_trace(go.Scatter(x=bh_res.index, y=bh_res['portfolio_value'], name=f"買入持有 ({curr_sym}{bh_m['_raw_final']:,.0f})", line=dict(color='gray', dash='dash')))
+            
+            for strat in selected_strategies:
+                if strat == "定期定額 (DCA)":
+                    d_freq = params["DCA"]["freq"]
+                    d_val = params["DCA"]["val"]
+                    d_custom = params["DCA"]["custom_days"]
+                    res = run_dca_backtest_advanced(data, initial_capital, monthly_inflow, d_freq, d_val, d_custom, fee_rate, slippage)
+                elif strat == "跌破均線且創新低買入":
+                    d_sma = params["DipDCA"]["sma_period"]
+                    d_tf = params["DipDCA"]["timeframe"]
+                    d_buy_amt = params["DipDCA"]["buy_amount"]
+                    d_interval = params["DipDCA"]["min_interval"]
+                    res = run_dip_dca_backtest(data, initial_capital, monthly_inflow, d_sma, d_tf, d_buy_amt, d_interval, fee_rate, slippage)
                 else:
-                    st.warning(f"標的 {symbol_item} 在所選期間內無有效數據。")
+                    p_key = "PriceSMA" if "突破" in strat else ("SMA" if "SMA" in strat else ("RSI" if "RSI" in strat else ("MACD" if "MACD" in strat else "KD")))
+                    sig = generate_signal(data, strat, params.get(p_key, {}))
+                    res = run_backtest(data, sig, fee_rate, tax_rate, slippage, initial_capital, monthly_inflow)
+                
+                m = eval_performance(res, curr_sym)
+                strategy_raw_data[strat] = m
+                
+                strat_full_dict = {
+                    "策略名稱": strat,
+                    "實際總投入本金": m["實際總投入本金"],
+                    "最終資產金額": m["最終資產金額"],
+                    "最終持股市值": m["最終持股市值"],
+                    "最終剩餘現金": m["最終剩餘現金"],
+                    "總報酬率": m["總報酬率"],
+                    "CAGR 年化報酬": m["CAGR 年化報酬"],
+                    "Max Drawdown (MDD)": m["Max Drawdown (MDD)"],
+                    "累積交易次數": m["累積交易次數"]
+                }
+                filtered_strat_dict = {k: v for k, v in strat_full_dict.items() if k == "策略名稱" or k in selected_cols}
+                metrics_display_list.append(filtered_strat_dict)
+                
+                fig.add_trace(go.Scatter(x=res.index, y=res['portfolio_value'], name=f"{strat} ({curr_sym}{m['_raw_final']:,.0f})", line=dict(width=2)))
             
-            fig.update_layout(title=f"套用【{chosen_strategy}】策略之各資產資產總額成長曲線", xaxis_title="日期", yaxis_title="資產總額", height=500)
+            fig.update_layout(title=f"{symbol} 資產總額成長曲線 ({curr_sym})", xaxis_title="日期", yaxis_title=f"資產總額 ({curr_sym})", height=500)
             
-            st.subheader(f"📊 策略【{chosen_strategy}】在各資產之績效與金額對比表")
-            if selected_cols and metrics_display_list:
-                metrics_df = pd.DataFrame(metrics_display_list).set_index("資產標的")
+            st.subheader("📊 各策略與 Buy & Hold 績效與金額對比表")
+            if selected_cols:
+                metrics_df = pd.DataFrame(metrics_display_list).set_index("策略名稱")
                 st.dataframe(metrics_df, use_container_width=True)
             else:
-                st.info("請勾選顯示欄位或確認標的有正確回測資料。")
+                st.info("請在左側側邊欄「4. 自訂表格顯示欄位」中至少勾選一個顯示項目。")
             
             st.plotly_chart(fig, use_container_width=True)
+            
+            st.subheader("💡 戰術診斷與現金流分析")
+            diagnostic_text = f"期初本金 **{curr_sym}{initial_capital:,.0f}** 搭配每月注資 **{curr_sym}{monthly_inflow:,.0f}**，在 Buy & Hold 策略中實際投入本金為 **{bh_m['實際總投入本金']}**：\n"
+            diagnostic_text += f"* **買入持有 (Buy & Hold)** 最終變成了 **{bh_m['最終資產金額']}**（總報酬率 **{bh_m['總報酬率']}**）。\n\n"
+            
+            for strat, m in strategy_raw_data.items():
+                diagnostic_text += f"#### 📌 【{strat}】診斷報告\n"
+                diagnostic_text += f"* **實際投入本金**: **{m['實際總投入本金']}**（剩餘未投入現金 **{m['最終剩餘現金']}**）。\n"
+                diagnostic_text += f"* **最終資產**: **{m['最終資產金額']}**（包含持股市值 **{m['最終持股市值']}** + 剩餘現金 **{m['最終剩餘現金']}**）。\n"
+                if strat == "跌破均線且創新低買入":
+                    diagnostic_text += f"* **抄底機制**: 僅在標的低於均線且創區間新低時觸發，全期共精準抄底 **{m['_raw_trades']} 次**。\n"
+                diagnostic_text += "\n"
+            st.markdown(diagnostic_text)
+        else:
+            st.error("未能獲取數據，請確認標的與日期設定。")
