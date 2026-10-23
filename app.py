@@ -6,26 +6,22 @@ import plotly.graph_objects as go
 
 st.set_page_config(layout="wide", page_title="多市場與多策略回測工具")
 
-st.title("📈 跨市場與多策略平行回測系統 (全域多選記憶版)")
+st.title("📈 多資產與多策略平行回測系統 (多資產比較版)")
 
-# --- 1. 側邊欄控制項：跨市場標的全域多選 ---
-st.sidebar.header("1. 選擇跨市場標的 (支援跨市場混搭)")
+# --- 1. 側邊欄控制項：標的與市場 ---
+st.sidebar.header("1. 選擇標的與市場 (支援多選)")
+market = st.sidebar.selectbox("市場類別", ["美股", "台股", "加密貨幣"])
 
-all_market_presets = [
-    "0050.TW (元大台灣50)", "2330.TW (台積電)", "0056.TW (元大高股息)", "2317.TW (鴻海)", "2454.TW (聯發科)",
-    "QQQ (納斯達克100)", "AAPL (蘋果)", "NVDA (輝達)", "SPY (S&P 500)", "TSLA (特斯拉)", "MSFT (微軟)",
-    "BTC-USD (比特幣)", "ETH-USD (乙太幣)", "SOL-USD (索拉納)", "BNB-USD (幣安幣)"
-]
-
-# 使用 session_state 記憶使用者跨市場勾選的標的，切換類別時不會消失
-if "selected_symbols" not in st.session_state:
-    st.session_state.selected_symbols = ["0050.TW (元大台灣50)"]
+preset_options = {
+    "台股": ["0050.TW (元大台灣50)", "2330.TW (台積電)", "0056.TW (元大高股息)", "2317.TW (鴻海)", "2454.TW (聯發科)"],
+    "美股": ["QQQ (納斯達克100)", "AAPL (蘋果)", "NVDA (輝達)", "SPY (S&P 500)", "TSLA (特斯拉)", "MSFT (微軟)"],
+    "加密貨幣": ["BTC-USD (比特幣)", "ETH-USD (乙太幣)", "SOL-USD (索拉納)", "BNB-USD (幣安幣)"]
+}
 
 selected_symbols = st.sidebar.multiselect(
-    "已選定與可勾選的資產池（可跨市場複選）",
-    all_market_presets,
-    default=st.session_state.selected_symbols,
-    key="selected_symbols"
+    "選擇要回測的標的（可複選多個）",
+    preset_options[market],
+    default=[preset_options[market][0]]
 )
 
 # 幣別選擇與匯率設定
@@ -59,20 +55,20 @@ else:
 
 # --- 2. 側邊欄控制項：交易成本 ---
 st.sidebar.header("2. 設定交易成本與滑點")
-def get_default_costs(ticker_symbol):
-    clean = ticker_symbol.strip().upper()
-    if ".TW" in clean or ".TWO" in clean:
-        if "00" in clean:
+def get_default_costs(market_type, ticker_symbol):
+    if market_type == "台股":
+        clean_symbol = ticker_symbol.strip().upper()
+        if "00" in clean_symbol:
             return 0.071, 0.10, 0.02
         else:
             return 0.071, 0.30, 0.03
-    elif "-USD" in clean:
-        return 0.10, 0.00, 0.10
-    else:
+    elif market_type == "美股":
         return 0.00, 0.00, 0.03
+    else:
+        return 0.10, 0.00, 0.10
 
-sample_symbol = selected_symbols[0] if selected_symbols else "0050.TW"
-auto_fee, auto_tax, auto_slip = get_default_costs(sample_symbol)
+sample_symbol = selected_symbols[0] if selected_symbols else "QQQ"
+auto_fee, auto_tax, auto_slip = get_default_costs(market, sample_symbol)
 fee_input = st.sidebar.number_input("手續費率 (%)", value=auto_fee, step=0.01, format="%.3f")
 tax_input = st.sidebar.number_input("賣出證交稅 (%)", value=auto_tax, step=0.01, format="%.2f")
 slip_input = st.sidebar.number_input("單邊預估滑點 (%)", value=auto_slip, step=0.01, format="%.2f")
@@ -175,19 +171,12 @@ selected_cols = st.sidebar.multiselect(
 
 # --- 資料獲取與匯率處理工具 ---
 @st.cache_data
-def load_data_and_fx(ticker_raw, start, end, auto_adjust=True, user_curr="新台幣 (TWD)"):
+def load_data_and_fx(ticker_raw, market_type, start, end, auto_adjust=True, user_curr="新台幣 (TWD)"):
     ticker = ticker_raw.split(" ")[0].strip()
     formatted_ticker = ticker
+    if market_type == "台股" and not ticker.endswith(".TW") and not ticker.endswith(".TWO"):
+        formatted_ticker = ticker + ".TW"
     
-    # 判斷資產所屬市場類別
-    if "-USD" in ticker:
-        market_type = "加密貨幣"
-    elif ".TW" in ticker or ".TWO" in ticker:
-        market_type = "台股"
-    else:
-        # 若為美股代碼但未加尾綴，直接抓取
-        market_type = "美股"
-        
     df = yf.download(formatted_ticker, start=start, end=end, auto_adjust=auto_adjust)
     
     if isinstance(df.columns, pd.MultiIndex):
@@ -540,13 +529,16 @@ if st.sidebar.button("開始多資產策略回測"):
     if not selected_symbols:
         st.error("請至少選擇一個回測標的！")
     else:
-        with st.spinner("正在進行跨市場多資產平行回測運算..."):
+        with st.spinner("正在進行多資產平行回測運算..."):
             fig = go.Figure()
             metrics_display_list = []
             
+            dividend_label = " (含息總報酬)" if reinvest_dividends else " (未還原價格)"
+            
             for symbol_item in selected_symbols:
-                data, curr_sym = load_data_and_fx(symbol_item, start_date, end_date, auto_adjust=reinvest_dividends, user_curr=user_currency)
+                data, curr_sym = load_data_and_fx(symbol_item, market, start_date, end_date, auto_adjust=reinvest_dividends, user_curr=user_currency)
                 if len(data) > 0:
+                    # 根據使用者選擇的策略套用對應引擎
                     if chosen_strategy == "買入持有 (Buy & Hold)":
                         res = run_buy_and_hold_with_inflow(data, initial_capital, monthly_inflow, fee_rate, slippage)
                     elif chosen_strategy == "定期定額 (DCA)":
@@ -561,6 +553,8 @@ if st.sidebar.button("開始多資產策略回測"):
                         d_interval = params["DipDCA"]["min_interval"]
                         res = run_dip_dca_backtest(data, initial_capital, monthly_inflow, d_sma, d_tf, d_buy_amt, d_interval, fee_rate, slippage)
                     else:
+                        p_key = "PriceSMA" if "突破" in chosen_strategy else ("SMA" if "SMA" in chosen_strategy else ("RSI" in chosen_strategy and "RSI" or ("MACD" in chosen_strategy and "MACD" or "KD")))
+                        # 簡單對應 key
                         if "突破" in chosen_strategy: p_key = "PriceSMA"
                         elif "雙均線" in chosen_strategy: p_key = "SMA"
                         elif "RSI" in chosen_strategy: p_key = "RSI"
@@ -590,7 +584,7 @@ if st.sidebar.button("開始多資產策略回測"):
                 else:
                     st.warning(f"標的 {symbol_item} 在所選期間內無有效數據。")
             
-            fig.update_layout(title=f"套用【{chosen_strategy}】策略之各資產成長曲線", xaxis_title="日期", yaxis_title="資產總額", height=500)
+            fig.update_layout(title=f"套用【{chosen_strategy}】策略之各資產資產總額成長曲線", xaxis_title="日期", yaxis_title="資產總額", height=500)
             
             st.subheader(f"📊 策略【{chosen_strategy}】在各資產之績效與金額對比表")
             if selected_cols and metrics_display_list:
