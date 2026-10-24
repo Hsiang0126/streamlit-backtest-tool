@@ -335,7 +335,7 @@ class PerformanceEvaluator:
         final_stock_val = df['stock_value'].iloc[-1]
         final_cash = df['cash'].iloc[-1]
         
-        # 修正：實際投入本金 = 累積注入總資金 - 最終未投入之剩餘現金
+        # 實際投入本金 = 累積注入總資金 - 最終未投入之剩餘現金
         actual_invested = gross_invested - final_cash
         
         if actual_invested > 0:
@@ -370,7 +370,7 @@ class PerformanceEvaluator:
 # ==========================================
 # 5. UI 介面與主流程控制 (Streamlit UI)
 # ==========================================
-st.title("📈 多市場與多策略比較回測系統 (動態成本與精確本金版)")
+st.title("📈 多市場與多策略比較回測系統 (符號標記版)")
 
 # --- 側邊欄 1：選擇標的與資產 ---
 st.sidebar.header("1. 選擇標的與資產")
@@ -515,7 +515,24 @@ if st.sidebar.button("開始多策略與多資產回測"):
                 if len(data_dict) > 1:
                     st.subheader("🔀 多資產 × 多策略 總報酬率矩陣 (%)")
                     pivot_df = results_df.pivot(index="標的", columns="策略", values="_raw_return") * 100
-                    st.dataframe(pivot_df.style.highlight_max(axis=1, color="lightgreen").format("{:.2f}%"), use_container_width=True)
+                    
+                    # 格式化矩陣：無滿版底色，最高報酬率添加皇冠 👑 符號與標示
+                    def format_matrix_with_crown(df):
+                        formatted_df = df.copy().astype(object)
+                        for row in df.index:
+                            max_val = df.loc[row].max()
+                            for col in df.columns:
+                                val = df.loc[row, col]
+                                if pd.isna(val):
+                                    formatted_df.loc[row, col] = "-"
+                                elif val == max_val:
+                                    formatted_df.loc[row, col] = f"👑 {val:.2f}%"
+                                else:
+                                    formatted_df.loc[row, col] = f"{val:.2f}%"
+                        return formatted_df
+
+                    formatted_matrix = format_matrix_with_crown(pivot_df)
+                    st.dataframe(formatted_matrix, use_container_width=True)
 
                 st.subheader("📈 資產成長曲線圖")
                 fig.update_layout(xaxis_title="日期", yaxis_title=f"資產總額 ({curr_sym})", height=500)
