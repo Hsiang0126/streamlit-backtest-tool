@@ -153,39 +153,13 @@ class IndicatorCalculator:
 # ==========================================
 class BacktestEngine:
     @staticmethod
-    def run_buy_and_hold(df, init_capital, monthly_inflow, fee, slip):
-        data = df.copy()
-        total_days = len(data)
-        month_changed = (pd.Series(data.index.month, index=data.index) != pd.Series(data.index.month, index=data.index).shift(1))
-        
-        cash, total_invested, shares = init_capital, init_capital, 0.0
-        portfolio_vals, cash_hist, stock_hist = [], [], []
-        
-        for i in range(total_days):
-            if i > 0 and month_changed.iloc[i]:
-                cash += monthly_inflow
-                total_invested += monthly_inflow
-                
-            if cash > 0:
-                buy_price = data['close'].iloc[i] * (1 + fee + slip)
-                shares += cash / buy_price
-                cash = 0.0
-                
-            stock_val = shares * data['close'].iloc[i]
-            portfolio_vals.append(cash + stock_val)
-            cash_hist.append(cash)
-            stock_hist.append(stock_val)
-            
-        data['portfolio_value'] = portfolio_vals
-        data['total_invested'] = total_invested
-        data['cash'] = cash_hist
-        data['stock_value'] = stock_hist
-        data['equity_net'] = data['portfolio_value'] / total_invested
-        data['trades'] = 1
-        return data
-
-    @staticmethod
-    def run_dca(df, init_capital, monthly_inflow, freq_type, dca_amount, custom_days, fee, slip):
+    def run_dca_strategy(df, init_capital, monthly_inflow, freq_type, dca_amount, custom_days, fee, slip):
+        """
+        合併 Buy & Hold 與 DCA 的統一引擎：
+        - 第 1 天若有初始本金 (init_capital > 0)，先單筆一次性投入買入。
+        - 每月新增可投入資金注入現金池。
+        - 依照設定頻率 (每月/每週/自訂天數)，若現金池有資金則進行 DCA 買入。
+        """
         data = df.copy()
         total_days = len(data)
         month_changed = (pd.Series(data.index.month, index=data.index) != pd.Series(data.index.month, index=data.index).shift(1))
@@ -205,11 +179,20 @@ class BacktestEngine:
         
         for i in range(total_days):
             curr_date = data.index[i]
+            
+            # 月份變更：新增每月可投入資金
             if i > 0 and month_changed.iloc[i]:
                 cash += monthly_inflow
                 total_invested += monthly_inflow
                 
-            if curr_date in buy_indices and cash > 0:
+            # 第 1 天：若有初始本金，單筆一次性全部投入買入
+            if i == 0 and cash > 0:
+                buy_price = data['close'].iloc[i] * (1 + fee + slip)
+                shares += cash / buy_price
+                cash = 0.0
+                trade_count += 1
+            # 後續扣款日：執行定期定額買入
+            elif curr_date in buy_indices and cash > 0 and dca_amount > 0:
                 actual_buy = min(cash, dca_amount)
                 buy_price = data['close'].iloc[i] * (1 + fee + slip)
                 shares += actual_buy / buy_price
@@ -370,7 +353,7 @@ class PerformanceEvaluator:
 # ==========================================
 # 5. UI 介面與主流程控制 (Streamlit UI)
 # ==========================================
-st.title("📈 多市場與多策略比較回測系統 (符號標記版)")
+st.title("📈 多市場與多策略比較回測系統 (DCA與單筆合併版)")
 
 # --- 側邊欄 1：選擇標的與資產 ---
 st.sidebar.header("1. 選擇標的與資產")
@@ -423,22 +406,32 @@ if not auto_cost_toggle:
 
 # --- 側邊欄 3：選擇與設定策略 ---
 st.sidebar.header("3. 選擇與設定策略")
-available_strats = ["買入持有 (Buy & Hold)", "定期定額 (DCA)", "跌破均線且創新低買入", "價格突破均線買入/跌破賣出", "SMA 雙均線交叉", "RSI 超買超賣", "MACD 柱狀圖/交叉", "KD 隨機指標"]
-selected_strategies = st.sidebar.multiselect("選擇策略", available_strats, default=["買入持有 (Buy & Hold)", "定期定額 (DCA)", "跌破均線且創新低買入"])
+available_strats = [
+    "定期定額 / 買入持有 (DCA / Buy & Hold)", 
+    "跌破均線且創新低買入", 
+    "價格突破均線買入/跌破賣出", 
+    "SMA 雙均線交叉", 
+    "RSI 超買超賣", 
+    "MACD 柱狀圖/交叉", 
+    "KD 隨機指標"
+]
+selected_strategies = st.sidebar.multiselect("選擇策略", available_strats, default=["定期定額 / 買入持有 (DCA / Buy & Hold)", "跌破均線且創新低買入"])
 
 params = {}
-if "定期定額 (DCA)" in selected_strategies:
+if "定期定額 / 買入持有 (DCA / Buy & Hold)" in selected_strategies:
+    st.sidebar.markdown("**[DCA / 買入持有 設定]**")
     params["DCA"] = {
-        "freq": st.sidebar.selectbox("DCA 頻率", ["每月 (Monthly)", "每週 (Weekly)", "自訂交易日數"]),
-        "val": float(st.sidebar.number_input("DCA 每期金額", value=10000 if "TWD" in user_currency else 1000)),
+        "freq": st.sidebar.selectbox("DCA 扣款頻率", ["每月 (Monthly)", "每週 (Weekly)", "自訂交易日數"]),
+        "val": float(st.sidebar.number_input("每期 DCA 扣款金額", value=30000 if "TWD" in user_currency else 1000, step=1000)),
         "custom_days": 20
     }
 
 if "跌破均線且創新低買入" in selected_strategies:
+    st.sidebar.markdown("**[跌破均線創新低買入 設定]**")
     params["DipDCA"] = {
         "sma_period": int(st.sidebar.number_input("DipDCA 均線週期", value=60)),
         "timeframe": st.sidebar.selectbox("DipDCA 單位", ["週線 (Weekly)", "日線 (Daily)"]),
-        "buy_amount": float(st.sidebar.number_input("抄底觸發金額", value=10000 if "TWD" in user_currency else 1000)),
+        "buy_amount": float(st.sidebar.number_input("抄底觸發金額", value=50000 if "TWD" in user_currency else 1000)),
         "min_interval": int(st.sidebar.number_input("買入最小間隔(日)", value=1))
     }
 
@@ -489,10 +482,12 @@ if st.sidebar.button("開始多策略與多資產回測"):
                         fee_rate, tax_rate, slippage = fee_input, tax_input, slip_input
 
                     for strat in selected_strategies:
-                        if strat == "買入持有 (Buy & Hold)":
-                            res = BacktestEngine.run_buy_and_hold(data, initial_capital, monthly_inflow, fee_rate, slippage)
-                        elif strat == "定期定額 (DCA)":
-                            res = BacktestEngine.run_dca(data, initial_capital, monthly_inflow, params["DCA"]["freq"], params["DCA"]["val"], params["DCA"]["custom_days"], fee_rate, slippage)
+                        if strat == "定期定額 / 買入持有 (DCA / Buy & Hold)":
+                            res = BacktestEngine.run_dca_strategy(
+                                data, initial_capital, monthly_inflow, 
+                                params["DCA"]["freq"], params["DCA"]["val"], 
+                                params["DCA"]["custom_days"], fee_rate, slippage
+                            )
                         elif strat == "跌破均線且創新低買入":
                             res = BacktestEngine.run_dip_dca(data, initial_capital, monthly_inflow, params["DipDCA"], fee_rate, slippage)
                         else:
@@ -516,7 +511,6 @@ if st.sidebar.button("開始多策略與多資產回測"):
                     st.subheader("🔀 多資產 × 多策略 總報酬率矩陣 (%)")
                     pivot_df = results_df.pivot(index="標的", columns="策略", values="_raw_return") * 100
                     
-                    # 格式化矩陣：無滿版底色，最高報酬率添加皇冠 👑 符號與標示
                     def format_matrix_with_crown(df):
                         formatted_df = df.copy().astype(object)
                         for row in df.index:
