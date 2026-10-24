@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 st.set_page_config(layout="wide", page_title="多市場與多策略回測工具")
 
 # ==========================================
-# 1. 市場與數據處理模組 (Data Module)
+# 1. 跨市場數據處理模組 (Data Module)
 # ==========================================
 class DataFetcher:
     PRESET_OPTIONS = {
@@ -17,30 +17,32 @@ class DataFetcher:
     }
 
     @staticmethod
-    def get_default_costs(market_type, ticker_symbol):
+    def get_default_costs(ticker_symbol):
         clean_symbol = ticker_symbol.strip().upper()
-        if market_type == "台股":
+        if clean_symbol.isdigit() or clean_symbol.endswith(".TW") or clean_symbol.endswith(".TWO"):
             return (0.071, 0.10, 0.02) if clean_symbol.startswith("00") else (0.071, 0.30, 0.03)
-        elif market_type == "美股":
-            return 0.00, 0.00, 0.03
-        else:
+        elif "-USD" in clean_symbol:
             return 0.10, 0.00, 0.10
+        else:
+            return 0.00, 0.00, 0.03
 
     @staticmethod
-    def format_ticker(ticker, market_type):
-        ticker = ticker.strip().upper()
-        if market_type == "台股" and not (ticker.endswith(".TW") or ticker.endswith(".TWO")):
-            return f"{ticker}.TW"
-        return ticker
+    def normalize_ticker(ticker):
+        t = ticker.strip().upper()
+        if t.isdigit():
+            return f"{t}.TW"
+        return t
 
     @classmethod
     @st.cache_data
-    def load_data_and_fx(cls, tickers, market_type, start, end, auto_adjust=True, user_curr="新台幣 (TWD)"):
-        formatted_tickers = [cls.format_ticker(t, market_type) for t in tickers]
+    def load_data_and_fx(cls, tickers, start, end, auto_adjust=True, user_curr="新台幣 (TWD)"):
+        fmt_to_orig = {cls.normalize_ticker(t): t.strip().upper() for t in tickers}
+        formatted_tickers = list(fmt_to_orig.keys())
+        
         df = yf.download(formatted_tickers, start=start, end=end, auto_adjust=auto_adjust, group_by='ticker', progress=False)
         
         processed_data = {}
-        for original_t, fmt_t in zip(tickers, formatted_tickers):
+        for fmt_t, orig_t in fmt_to_orig.items():
             try:
                 sub_df = df[fmt_t] if len(formatted_tickers) > 1 else df
                 if isinstance(sub_df.columns, pd.MultiIndex):
@@ -54,22 +56,22 @@ class DataFetcher:
                 res_df = res_df[res_df['close'] > 0.01]
                 
                 if not res_df.empty:
-                    processed_data[original_t] = res_df
+                    processed_data[orig_t] = res_df
             except Exception:
                 continue
 
-        is_usd_asset = (market_type in ["美股", "加密貨幣"])
         curr_symbol = "NT$" if "TWD" in user_curr else "$"
         
-        if is_usd_asset and "TWD" in user_curr:
+        if "TWD" in user_curr:
             fx_df = yf.download("USDTWD=X", start=start, end=end, auto_adjust=True, progress=False)
             fx_close = fx_df['Close'].iloc[:, 0] if isinstance(fx_df['Close'], pd.DataFrame) else fx_df['Close']
             
-            for t in processed_data:
-                fx_series = fx_close.reindex(processed_data[t].index, method='ffill').fillna(30.0)
-                processed_data[t]['close'] *= fx_series
-                processed_data[t]['high'] *= fx_series
-                processed_data[t]['low'] *= fx_series
+            for orig_t in processed_data:
+                if not (orig_t.endswith(".TW") or orig_t.endswith(".TWO") or orig_t.isdigit()):
+                    fx_series = fx_close.reindex(processed_data[orig_t].index, method='ffill').fillna(30.0)
+                    processed_data[orig_t]['close'] *= fx_series
+                    processed_data[orig_t]['high'] *= fx_series
+                    processed_data[orig_t]['low'] *= fx_series
                 
         return processed_data, curr_symbol
 
@@ -257,12 +259,6 @@ class BacktestEngine:
 
     @staticmethod
     def run_timing_strategy(df, signal_series, fee, tax, slip, init_capital, monthly_inflow):
-        """
-        修正版擇時策略引擎：
-        - 每月新增資金進入現金池。
-        - 只有當策略發出「買入訊號（空轉多）」時，才會把帳上累積的所有現金買入。
-        - 持倉期間（Position = 1）新進來的資金會積攢在現金池中，直到下一次觸發買入訊號（平倉後重新進場）時一併投入。
-        """
         data = df.copy()
         total_days = len(data)
         month_changed = (pd.Series(data.index.month, index=data.index) != pd.Series(data.index.month, index=data.index).shift(1))
@@ -273,7 +269,6 @@ class BacktestEngine:
         trade_count = 0
         
         for i in range(total_days):
-            # 每月注資注入現金儲蓄池
             if i > 0 and month_changed.iloc[i]:
                 cash += monthly_inflow
                 total_invested += monthly_inflow
@@ -282,15 +277,12 @@ class BacktestEngine:
             prev_pos = position.iloc[i-1] if i > 0 else 0.0
             price = data['close'].iloc[i]
             
-            # 策略觸發【買入訊號】(無倉位轉為有倉位)：把目前手頭所有現金全數投入
             if pos > 0 and prev_pos == 0:
                 if cash > 0:
                     buy_price = price * (1 + fee + slip)
                     shares += cash / buy_price
                     cash = 0.0
                     trade_count += 1
-                    
-            # 策略觸發【賣出訊號】(有倉位轉為無倉位)：全數賣出換回現金
             elif pos == 0 and prev_pos > 0 and shares > 0:
                 sell_price = price * (1 - fee - tax - slip)
                 cash += shares * sell_price
@@ -353,18 +345,22 @@ class PerformanceEvaluator:
 # ==========================================
 # 5. UI 介面與主流程控制 (Streamlit UI)
 # ==========================================
-st.title("📈 多市場與多策略比較回測系統 (嚴謹策略現金流版)")
+st.title("📈 多市場與多策略比較回測系統 (跨市場無縫版)")
 
 # --- 側邊欄 1：選擇標的與市場 ---
-st.sidebar.header("1. 選擇標的與市場")
-market = st.sidebar.selectbox("市場類別", ["美股", "台股", "加密貨幣"])
+st.sidebar.header("1. 選擇標的與資產")
 
-select_mode = st.sidebar.radio("標的選擇模式", ["熱門標的單選/多選", "自訂輸入"])
-if select_mode == "熱門標的單選/多選":
-    selected_presets = st.sidebar.multiselect("選擇標的（可多選進行交叉對比）", DataFetcher.PRESET_OPTIONS[market], default=[DataFetcher.PRESET_OPTIONS[market][0]])
-    target_symbols = [p.split(" ")[0].strip() for p in selected_presets]
+select_mode = st.sidebar.radio("標的輸入模式", ["混合輸入 (支援跨市場)", "快速帶入熱門標的"])
+if select_mode == "快速帶入熱門標的":
+    market_cat = st.sidebar.selectbox("熱門分類參考", ["美股", "台股", "加密貨幣"])
+    selected_presets = st.sidebar.multiselect("選擇熱門標的", DataFetcher.PRESET_OPTIONS[market_cat], default=[DataFetcher.PRESET_OPTIONS[market_cat][0]])
+    preset_symbols = [p.split(" ")[0].strip() for p in selected_presets]
+    target_symbols = preset_symbols
 else:
-    custom_input = st.sidebar.text_input("輸入自訂代碼 (多個請用逗號隔開)", value="QQQ, AAPL" if market == "美股" else "0050, 2330")
+    custom_input = st.sidebar.text_input(
+        "輸入自訂代碼 (可跨市場，逗號隔開)", 
+        value="0050, 2330, QQQ, BTC-USD"
+    )
     target_symbols = [s.strip().upper() for s in custom_input.split(",") if s.strip()]
 
 user_currency = st.sidebar.selectbox("輸入資金幣別", ["新台幣 (TWD)", "美元 (USD)"])
@@ -372,7 +368,6 @@ initial_capital = st.sidebar.number_input("期初投入本金", value=300000 if 
 monthly_inflow = st.sidebar.number_input("每月固定新增可投入資金", value=30000 if "TWD" in user_currency else 1000, step=1000)
 reinvest_dividends = st.sidebar.checkbox("計入股利再投入", value=True)
 
-# 時間跨度
 time_option = st.sidebar.selectbox("回測時間跨度", ["近 3 年", "近 5 年", "近 10 年", "自訂日期範圍"], index=1)
 today = pd.to_datetime("today")
 if time_option == "近 3 年":
@@ -387,12 +382,12 @@ else:
 
 # --- 側邊欄 2：交易成本 ---
 st.sidebar.header("2. 交易成本設定")
-auto_fee, auto_tax, auto_slip = DataFetcher.get_default_costs(market, target_symbols[0] if target_symbols else "")
+auto_fee, auto_tax, auto_slip = DataFetcher.get_default_costs(target_symbols[0] if target_symbols else "")
 fee_rate = st.sidebar.number_input("手續費率 (%)", value=auto_fee, step=0.01) / 100
 tax_rate = st.sidebar.number_input("賣出證交稅 (%)", value=auto_tax, step=0.01) / 100
 slippage = st.sidebar.number_input("預估滑點 (%)", value=auto_slip, step=0.01) / 100
 
-# --- 側邊欄 3：策略選擇與設定 ---
+# --- 側邊欄 3：選擇與設定策略 ---
 st.sidebar.header("3. 選擇與設定策略")
 available_strats = ["買入持有 (Buy & Hold)", "定期定額 (DCA)", "跌破均線且創新低買入", "價格突破均線買入/跌破賣出", "SMA 雙均線交叉", "RSI 超買超賣", "MACD 柱狀圖/交叉", "KD 隨機指標"]
 selected_strategies = st.sidebar.multiselect("選擇策略", available_strats, default=["買入持有 (Buy & Hold)", "定期定額 (DCA)", "跌破均線且創新低買入"])
@@ -428,7 +423,7 @@ if "MACD 柱狀圖/交叉" in selected_strategies:
 if "KD 隨機指標" in selected_strategies:
     params["KD"] = {"period": 9, "buy_k": 20, "sell_k": 80}
 
-# --- 側邊欄 4：自訂欄位 ---
+# --- 側邊欄 4：自訂顯示欄位 ---
 st.sidebar.header("4. 自訂顯示欄位")
 all_metrics_cols = ["實際總投入本金", "最終資產金額", "最終持股市值", "最終剩餘現金", "總報酬率", "CAGR 年化報酬", "Max Drawdown (MDD)", "累積交易次數"]
 selected_cols = st.sidebar.multiselect("表格數據欄位", all_metrics_cols, default=all_metrics_cols)
@@ -439,7 +434,13 @@ if st.sidebar.button("開始多策略與多資產回測"):
         st.error("請至少選擇或輸入一個標的代碼！")
     else:
         with st.spinner("正在獲取數據與運算回測結果..."):
-            data_dict, curr_sym = DataFetcher.load_data_and_fx(target_symbols, market, start_date, end_date, auto_adjust=reinvest_dividends, user_curr=user_currency)
+            data_dict, curr_sym = DataFetcher.load_data_and_fx(
+                target_symbols, 
+                start_date, 
+                end_date, 
+                auto_adjust=reinvest_dividends, 
+                user_curr=user_currency
+            )
             
             if not data_dict:
                 st.error("無法獲取對應標的數據，請確認代碼與日期。")
