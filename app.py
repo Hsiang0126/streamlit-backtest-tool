@@ -142,12 +142,12 @@ class DataFetcher:
 
         if auto_adjust:
             warnings.append(
-                "目前使用 Yahoo Finance 未調整 OHLC；股利按事件日持有股數計入現金，拆股日調整持股數。"
+                "目前使用 Yahoo Finance 歷史 OHLC；價格通常已回溯反映拆股，因此不再次調整持股數；股利依事件資料計入現金。"
                 "股利不會自動再投資；若來源未提供完整企業行動資料，總報酬仍可能不完整。"
             )
         else:
             warnings.append(
-                "目前使用未調整 OHLC，且已關閉股利／拆股事件處理。若回測期間發生企業行動，績效將不代表完整總報酬。"
+                "目前已關閉股利／拆股事件處理。若回測期間發生股利等企業行動，績效將不代表完整總報酬；歷史價格仍依 Yahoo Finance 提供的拆股調整基準。"
             )
 
         target_currency = "TWD" if "TWD" in user_curr else "USD"
@@ -336,18 +336,22 @@ class BacktestEngine:
 
     @staticmethod
     def _apply_corporate_actions(data, i, shares, cash):
-        """在當日交易前處理企業行動：股利按前收盤持股入帳，拆股調整股數。"""
+        """處理 Yahoo Finance 企業行動事件。
+
+        Yahoo Finance 的歷史 OHLC 即使 auto_adjust=False，通常仍會回溯反映拆股；
+        因此回測價格與拆股後股數基準一致時，不可再將 shares 乘上 split_ratio，
+        否則可能重複計算拆股。股利則按資料源提供的每股股利與持股數計入現金。
+        此處仍驗證拆股資料，確保無效事件不會靜默進入帳本。
+        """
         dividend = float(data["dividend"].iloc[i]) if "dividend" in data.columns else 0.0
         split_ratio = float(data["split"].iloc[i]) if "split" in data.columns else 0.0
         if not np.isfinite(dividend) or dividend < 0:
             raise ValueError("股利資料必須是有限且非負的數值。")
         if not np.isfinite(split_ratio) or split_ratio < 0:
             raise ValueError("拆股比例資料必須是有限且非負的數值。")
-        # Yahoo Finance 的 Stock Splits 通常為 2.0、0.5 等比例；0 代表無拆股事件。
         if dividend > 0 and shares > 0:
             cash += shares * dividend
-        if split_ratio > 0 and shares > 0:
-            shares *= split_ratio
+        # 不調整 shares：Yahoo 歷史 OHLC 已通常按拆股回溯調整，避免重複計算。
         return shares, cash
 
     @staticmethod
@@ -742,9 +746,9 @@ user_currency = st.sidebar.selectbox("輸入資金幣別", ["新台幣 (TWD)", "
 initial_capital = st.sidebar.number_input("期初投入本金", value=300000 if "TWD" in user_currency else 10000, step=10000)
 monthly_inflow = st.sidebar.number_input("每月固定新增可投入資金", value=30000 if "TWD" in user_currency else 1000, step=1000)
 reinvest_dividends = st.sidebar.checkbox(
-    "模擬股利入帳與拆股持股數調整",
+    "模擬股利入帳（拆股由歷史價格基準反映）",
     value=True,
-    help="使用未調整 OHLC。開啟時，股利依除息日持股計入現金、拆股依事件比例調整持股數；關閉時不處理企業行動。這不是股利自動再投資，且依賴 Yahoo Finance 事件資料完整性。"
+    help="使用 Yahoo Finance 的歷史 OHLC；即使 auto_adjust=False，價格通常仍已回溯反映拆股，因此不再手動調整持股數。開啟時股利依事件資料計入現金；關閉時不處理股利／拆股事件。股利不會自動再投資，且結果依賴來源資料完整性。"
 )
 
 # 選擇時間跨度
@@ -885,11 +889,14 @@ if st.sidebar.button("開始多策略與多資產回測"):
                             res = BacktestEngine.run_timing_strategy(data, sig, fee_rate, tax_rate, slippage, initial_capital, monthly_inflow)
                         
                         # 3. 計算績效數據
-                        m = PerformanceEvaluator.evaluate(res, curr_sym)
+                        m = PerformanceEvaluator.evaluate(res, curr_sym, initial_capital=initial_capital)
+                        if not m:
+                            st.warning(f"{sym}／{strat}：績效資料未通過完整性或帳務驗證，已略過該組結果。")
+                            continue
                         m_row = {"標的": sym, "策略": strat, **m}
                         matrix_results.append(m_row)
-                        
-                        # 4. 繪製資產成長曲線
+
+                        # 4. 繪製資產成長曲線；只有通過績效驗證的策略才進圖表。
                         curve_label = f"{sym}-{strat}" if len(data_dict) > 1 else strat
                         fig.add_trace(go.Scatter(x=res.index, y=res['portfolio_value'], name=f"{curve_label} ({curr_sym}{m['_raw_final']:,.0f})"))
 
@@ -897,11 +904,14 @@ if st.sidebar.button("開始多策略與多資產回測"):
                 st.subheader("📊 績效與金額對比總表")
                 st.caption("TWR 用於比較策略表現；每月新增資金於當日交易前入帳。系統使用未調整 OHLC，並可依 Yahoo Finance 企業行動資料處理股利現金入帳與拆股持股數調整；股利目前留在現金、不自動再投資。資料來源若漏列企業行動，回測仍可能偏離實際結果。買賣成本以獨立乘數估算，並非券商撮合模擬。")
                 results_df = pd.DataFrame(matrix_results)
-                display_cols = ["標的", "策略"] + [c for c in selected_cols if c in results_df.columns]
-                st.dataframe(results_df[display_cols].set_index(["標的", "策略"]), use_container_width=True)
+                if results_df.empty:
+                    st.error("沒有任何策略通過績效驗證，請檢查資料、價格及帳務警告。")
+                else:
+                    display_cols = ["標的", "策略"] + [c for c in selected_cols if c in results_df.columns]
+                    st.dataframe(results_df[display_cols].set_index(["標的", "策略"]), use_container_width=True)
 
-                # 6. 若有多個標的，輸出『多資產 x 多策略』總報酬率對比矩陣
-                if len(data_dict) > 1:
+                # 6. 若有多個標的且至少一組策略有效，輸出總報酬率對比矩陣。
+                if len(data_dict) > 1 and not results_df.empty:
                     st.subheader("🔀 多資產 × 多策略 總報酬率矩陣 (%)")
                     pivot_df = results_df.pivot(index="標的", columns="策略", values="_raw_return") * 100
                     
