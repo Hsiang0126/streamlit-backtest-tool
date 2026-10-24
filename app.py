@@ -345,23 +345,30 @@ class PerformanceEvaluator:
 # ==========================================
 # 5. UI 介面與主流程控制 (Streamlit UI)
 # ==========================================
-st.title("📈 多市場與多策略比較回測系統 (跨市場無縫版)")
+st.title("📈 多市場與多策略比較回測系統 (混合選單版)")
 
-# --- 側邊欄 1：選擇標的與市場 ---
+# --- 側邊欄 1：選擇標的與資產 ---
 st.sidebar.header("1. 選擇標的與資產")
 
-select_mode = st.sidebar.radio("標的輸入模式", ["混合輸入 (支援跨市場)", "快速帶入熱門標的"])
-if select_mode == "快速帶入熱門標的":
-    market_cat = st.sidebar.selectbox("熱門分類參考", ["美股", "台股", "加密貨幣"])
-    selected_presets = st.sidebar.multiselect("選擇熱門標的", DataFetcher.PRESET_OPTIONS[market_cat], default=[DataFetcher.PRESET_OPTIONS[market_cat][0]])
-    preset_symbols = [p.split(" ")[0].strip() for p in selected_presets]
-    target_symbols = preset_symbols
-else:
-    custom_input = st.sidebar.text_input(
-        "輸入自訂代碼 (可跨市場，逗號隔開)", 
-        value="0050, 2330, QQQ, BTC-USD"
-    )
-    target_symbols = [s.strip().upper() for s in custom_input.split(",") if s.strip()]
+all_flat_presets = []
+for m_list in DataFetcher.PRESET_OPTIONS.values():
+    all_flat_presets.extend(m_list)
+
+selected_presets = st.sidebar.multiselect(
+    "下拉選取熱門標的 (可跨市場多選)",
+    options=all_flat_presets,
+    default=["0050 (元大台灣50)", "QQQ (納斯達克100)", "BTC-USD (比特幣)"]
+)
+
+custom_input_extra = st.sidebar.text_input(
+    "額外補充自訂代碼 (逗號隔開)",
+    value="2330",
+    help="如需補充下拉選單沒有的標的，請在此輸入（如：2454, NVDA）"
+)
+
+preset_symbols = [p.split(" ")[0].strip().upper() for p in selected_presets]
+extra_symbols = [s.strip().upper() for s in custom_input_extra.split(",") if s.strip()]
+target_symbols = list(dict.fromkeys(preset_symbols + extra_symbols))
 
 user_currency = st.sidebar.selectbox("輸入資金幣別", ["新台幣 (TWD)", "美元 (USD)"])
 initial_capital = st.sidebar.number_input("期初投入本金", value=300000 if "TWD" in user_currency else 10000, step=10000)
