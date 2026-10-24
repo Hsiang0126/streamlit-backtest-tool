@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 st.set_page_config(layout="wide", page_title="多市場與多策略回測工具")
 
 # ==========================================
-# 1. 跨市場數據處理模組 (Data Module)
+# 1. 跨市場數據與動態成本模組 (Data Module)
 # ==========================================
 class DataFetcher:
     PRESET_OPTIONS = {
@@ -17,14 +17,18 @@ class DataFetcher:
     }
 
     @staticmethod
-    def get_default_costs(ticker_symbol):
+    def get_asset_costs(ticker_symbol):
+        """依據標的特性動態回傳 (手續費率, 證交稅率, 預估滑點)"""
         clean_symbol = ticker_symbol.strip().upper()
         if clean_symbol.isdigit() or clean_symbol.endswith(".TW") or clean_symbol.endswith(".TWO"):
-            return (0.071, 0.10, 0.02) if clean_symbol.startswith("00") else (0.071, 0.30, 0.03)
+            # 台股 ETF 證交稅 0.1%，個股 0.3%
+            return (0.00071, 0.0010, 0.0002) if clean_symbol.startswith("00") else (0.00071, 0.0030, 0.0003)
         elif "-USD" in clean_symbol:
-            return 0.10, 0.00, 0.10
+            # 加密貨幣常見 0.1% 手續費，無證交稅
+            return 0.0010, 0.00, 0.0010
         else:
-            return 0.00, 0.00, 0.03
+            # 美股多數免手續費與證交稅
+            return 0.00, 0.00, 0.0003
 
     @staticmethod
     def normalize_ticker(ticker):
@@ -39,15 +43,24 @@ class DataFetcher:
         fmt_to_orig = {cls.normalize_ticker(t): t.strip().upper() for t in tickers}
         formatted_tickers = list(fmt_to_orig.keys())
         
+        # yfinance 安全下載
         df = yf.download(formatted_tickers, start=start, end=end, auto_adjust=auto_adjust, group_by='ticker', progress=False)
         
         processed_data = {}
         for fmt_t, orig_t in fmt_to_orig.items():
             try:
-                sub_df = df[fmt_t] if len(formatted_tickers) > 1 else df
+                # 解決單標的 vs 多標的欄位結構差異
+                if len(formatted_tickers) == 1:
+                    sub_df = df.copy()
+                else:
+                    sub_df = df[fmt_t] if fmt_t in df else pd.DataFrame()
+
                 if isinstance(sub_df.columns, pd.MultiIndex):
-                    sub_df.columns = sub_df.columns.get_level_values(0)
+                    sub_df.columns = sub_df.columns.get_level_values(-1)
                 
+                if 'Close' not in sub_df or sub_df['Close'].dropna().empty:
+                    continue
+
                 close_data = sub_df['Close']
                 high_data = sub_df['High'] if 'High' in sub_df else close_data
                 low_data = sub_df['Low'] if 'Low' in sub_df else close_data
@@ -62,16 +75,20 @@ class DataFetcher:
 
         curr_symbol = "NT$" if "TWD" in user_curr else "$"
         
+        # 匯率自動換算
         if "TWD" in user_curr:
-            fx_df = yf.download("USDTWD=X", start=start, end=end, auto_adjust=True, progress=False)
-            fx_close = fx_df['Close'].iloc[:, 0] if isinstance(fx_df['Close'], pd.DataFrame) else fx_df['Close']
-            
-            for orig_t in processed_data:
-                if not (orig_t.endswith(".TW") or orig_t.endswith(".TWO") or orig_t.isdigit()):
-                    fx_series = fx_close.reindex(processed_data[orig_t].index, method='ffill').fillna(30.0)
-                    processed_data[orig_t]['close'] *= fx_series
-                    processed_data[orig_t]['high'] *= fx_series
-                    processed_data[orig_t]['low'] *= fx_series
+            try:
+                fx_df = yf.download("USDTWD=X", start=start, end=end, auto_adjust=True, progress=False)
+                fx_close = fx_df['Close'].iloc[:, 0] if isinstance(fx_df['Close'], pd.DataFrame) else fx_df['Close']
+                
+                for orig_t in processed_data:
+                    if not (orig_t.endswith(".TW") or orig_t.endswith(".TWO") or orig_t.isdigit()):
+                        fx_series = fx_close.reindex(processed_data[orig_t].index, method='ffill').fillna(30.0)
+                        processed_data[orig_t]['close'] *= fx_series
+                        processed_data[orig_t]['high'] *= fx_series
+                        processed_data[orig_t]['low'] *= fx_series
+            except Exception:
+                pass
                 
         return processed_data, curr_symbol
 
@@ -345,7 +362,7 @@ class PerformanceEvaluator:
 # ==========================================
 # 5. UI 介面與主流程控制 (Streamlit UI)
 # ==========================================
-st.title("📈 多市場與多策略比較回測系統 (混合選單版)")
+st.title("📈 多市場與多策略比較回測系統 (動態成本版)")
 
 # --- 側邊欄 1：選擇標的與資產 ---
 st.sidebar.header("1. 選擇標的與資產")
@@ -362,8 +379,8 @@ selected_presets = st.sidebar.multiselect(
 
 custom_input_extra = st.sidebar.text_input(
     "額外補充自訂代碼 (逗號隔開)",
-    value="2330",
-    help="如需補充下拉選單沒有的標的，請在此輸入（如：2454, NVDA）"
+    value="",
+    help="如需補充下拉選單沒有的標的，請在此輸入（例如：2330, NVDA）"
 )
 
 preset_symbols = [p.split(" ")[0].strip().upper() for p in selected_presets]
@@ -387,12 +404,14 @@ else:
     start_date = st.sidebar.date_input("開始日期", value=pd.to_datetime("2015-01-01"))
     end_date = st.sidebar.date_input("結束日期", value=today)
 
-# --- 側邊欄 2：交易成本 ---
+# --- 側邊欄 2：交易成本設定 ---
 st.sidebar.header("2. 交易成本設定")
-auto_fee, auto_tax, auto_slip = DataFetcher.get_default_costs(target_symbols[0] if target_symbols else "")
-fee_rate = st.sidebar.number_input("手續費率 (%)", value=auto_fee, step=0.01) / 100
-tax_rate = st.sidebar.number_input("賣出證交稅 (%)", value=auto_tax, step=0.01) / 100
-slippage = st.sidebar.number_input("預估滑點 (%)", value=auto_slip, step=0.01) / 100
+auto_cost_toggle = st.sidebar.checkbox("依據各資產類別自動設定交易成本", value=True, help="勾選後，台股、美股、加密貨幣將分別套用各自合理的預設手續費與證交稅率。")
+
+if not auto_cost_toggle:
+    fee_input = st.sidebar.number_input("手續費率 (%)", value=0.071, step=0.01, format="%.3f") / 100
+    tax_input = st.sidebar.number_input("賣出證交稅 (%)", value=0.10, step=0.01, format="%.2f") / 100
+    slip_input = st.sidebar.number_input("單邊預估滑點 (%)", value=0.02, step=0.01, format="%.2f") / 100
 
 # --- 側邊欄 3：選擇與設定策略 ---
 st.sidebar.header("3. 選擇與設定策略")
@@ -456,6 +475,12 @@ if st.sidebar.button("開始多策略與多資產回測"):
                 fig = go.Figure()
                 
                 for sym, data in data_dict.items():
+                    # 動態取得每個標的專屬成本
+                    if auto_cost_toggle:
+                        fee_rate, tax_rate, slippage = DataFetcher.get_asset_costs(sym)
+                    else:
+                        fee_rate, tax_rate, slippage = fee_input, tax_input, slip_input
+
                     for strat in selected_strategies:
                         if strat == "買入持有 (Buy & Hold)":
                             res = BacktestEngine.run_buy_and_hold(data, initial_capital, monthly_inflow, fee_rate, slippage)
