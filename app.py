@@ -4,12 +4,23 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
+# ==========================================
+# 0. 頁面基本設定 (Page Config)
+# ==========================================
+# 設定 Streamlit 為寬螢幕模式，並設定網頁頁籤標題
 st.set_page_config(layout="wide", page_title="多市場與多策略回測工具")
 
+
 # ==========================================
-# 1. 跨市場數據與動態成本模組 (Data Module)
+# 1. 數據獲取與匯率處理模組 (Data Module)
 # ==========================================
 class DataFetcher:
+    """
+    【數據模組】負責向網絡 (Yahoo Finance) 抓取股票或加密貨幣的歷史價格，
+    並自動處理跨市場代碼格式（如台股加 .TW）與美元對台幣的匯率換算。
+    """
+    
+    # 預設熱門選單清單
     PRESET_OPTIONS = {
         "美股": ["QQQ (納斯達克100)", "AAPL (蘋果)", "NVDA (輝達)", "SPY (S&P 500)", "TSLA (特斯拉)", "MSFT (微軟)"],
         "台股": ["0050 (元大台灣50)", "2330 (台積電)", "0056 (元大高股息)", "2317 (鴻海)", "2454 (聯發科)"],
@@ -18,20 +29,26 @@ class DataFetcher:
 
     @staticmethod
     def get_asset_costs(ticker_symbol):
-        """依據標的特性動態回傳 (手續費率, 證交稅率, 預估滑點)"""
+        """
+        【功能】根據標的種類，自動帶入該市場常見的『交易成本』。
+        - 台股 ETF (00開頭)：手續費 0.071%, 證交稅 0.1%, 滑點 0.02%
+        - 台股個股：手續費 0.071%, 證交稅 0.3%, 滑點 0.03%
+        - 加密貨幣 (-USD)：手續費 0.1%, 無證交稅, 滑點 0.1%
+        - 美股：免手續費與證交稅, 滑點 0.03%
+        """
         clean_symbol = ticker_symbol.strip().upper()
         if clean_symbol.isdigit() or clean_symbol.endswith(".TW") or clean_symbol.endswith(".TWO"):
-            # 台股 ETF 證交稅 0.1%，個股 0.3%
             return (0.00071, 0.0010, 0.0002) if clean_symbol.startswith("00") else (0.00071, 0.0030, 0.0003)
         elif "-USD" in clean_symbol:
-            # 加密貨幣常見 0.1% 手續費，無證交稅
-            return 0.0010, 0.00, 0.0010
+            return (0.0010, 0.00, 0.0010)
         else:
-            # 美股多數免手續費與證交稅
-            return 0.00, 0.00, 0.0003
+            return (0.00, 0.00, 0.0003)
 
     @staticmethod
     def normalize_ticker(ticker):
+        """
+        【功能】代碼格式標準化。如果使用者輸入數字（如 0050），自動補上台股尾綴 (.TW)。
+        """
         t = ticker.strip().upper()
         if t.isdigit():
             return f"{t}.TW"
@@ -40,16 +57,21 @@ class DataFetcher:
     @classmethod
     @st.cache_data
     def load_data_and_fx(cls, tickers, start, end, auto_adjust=True, user_curr="新台幣 (TWD)"):
+        """
+        【功能】下載歷史價格並進行匯率轉換。
+        - 快取技術 (@st.cache_data)：相同條件下不用重複下載，加快運算速度。
+        - 匯率轉換：若選擇 TWD 計價，美股與加密貨幣的價格會自動乘以『美金對台幣歷史匯率』。
+        """
         fmt_to_orig = {cls.normalize_ticker(t): t.strip().upper() for t in tickers}
         formatted_tickers = list(fmt_to_orig.keys())
         
-        # yfinance 安全下載
+        # 向 Yahoo Finance 批量下載股價歷史數據
         df = yf.download(formatted_tickers, start=start, end=end, auto_adjust=auto_adjust, group_by='ticker', progress=False)
         
         processed_data = {}
         for fmt_t, orig_t in fmt_to_orig.items():
             try:
-                # 解決單標的 vs 多標的欄位結構差異
+                # 解決單一標的與多標的返回格式不同的差異
                 if len(formatted_tickers) == 1:
                     sub_df = df.copy()
                 else:
@@ -65,6 +87,7 @@ class DataFetcher:
                 high_data = sub_df['High'] if 'High' in sub_df else close_data
                 low_data = sub_df['Low'] if 'Low' in sub_df else close_data
                 
+                # 建立收盤價、最高價、最低價表格，並剔除異常值
                 res_df = pd.DataFrame({'close': close_data, 'high': high_data, 'low': low_data}).dropna()
                 res_df = res_df[res_df['close'] > 0.01]
                 
@@ -75,13 +98,14 @@ class DataFetcher:
 
         curr_symbol = "NT$" if "TWD" in user_curr else "$"
         
-        # 匯率自動換算
+        # 若以台幣計價，將非台股資產自動換算為台幣金額
         if "TWD" in user_curr:
             try:
                 fx_df = yf.download("USDTWD=X", start=start, end=end, auto_adjust=True, progress=False)
                 fx_close = fx_df['Close'].iloc[:, 0] if isinstance(fx_df['Close'], pd.DataFrame) else fx_df['Close']
                 
                 for orig_t in processed_data:
+                    # 不是台股的標的（如 QQQ, BTC-USD）自動乘以美金匯率
                     if not (orig_t.endswith(".TW") or orig_t.endswith(".TWO") or orig_t.isdigit()):
                         fx_series = fx_close.reindex(processed_data[orig_t].index, method='ffill').fillna(30.0)
                         processed_data[orig_t]['close'] *= fx_series
@@ -94,11 +118,17 @@ class DataFetcher:
 
 
 # ==========================================
-# 2. 技術指標與訊號模組 (Indicator Module)
+# 2. 技術指標與訊號產生模組 (Indicator Module)
 # ==========================================
 class IndicatorCalculator:
+    """
+    【指標模組】負責計算移動平均線 (MA)、RSI、MACD、KD 等技術指標，
+    並根據指標規則產生買賣訊號 (1 表示持有股票，0 表示空倉手握現金)。
+    """
+    
     @staticmethod
     def calculate_ma(df, period, timeframe="日線 (Daily)"):
+        """【功能】計算日均線或週均線 (SMA)"""
         if timeframe == "週線 (Weekly)":
             weekly_close = df['close'].resample('W-FRI').last().dropna()
             weekly_ma = weekly_close.rolling(period).mean()
@@ -107,16 +137,21 @@ class IndicatorCalculator:
 
     @classmethod
     def generate_signal(cls, df, strat_name, p):
+        """【功能】根據選擇的技術指標策略，計算每日的買賣訊號 (1=買進持有, 0=賣出空倉)"""
         data = df.copy()
+        
+        # 策略 1：價格突破均線買入，跌破均線賣出
         if strat_name == "價格突破均線買入/跌破賣出":
             sma = cls.calculate_ma(data, p['period'], p.get('timeframe', '日線 (Daily)'))
             return (data['close'] > sma).astype(int)
             
+        # 策略 2：SMA 快慢雙均線黃金交叉買入，死亡交叉賣出
         elif strat_name == "SMA 雙均線交叉":
             fast_m = cls.calculate_ma(data, p['fast'], p.get('timeframe', '日線 (Daily)'))
             slow_m = cls.calculate_ma(data, p['slow'], p.get('timeframe', '日線 (Daily)'))
             return (fast_m > slow_m).astype(int)
             
+        # 策略 3：RSI 超賣 (低於買入界線) 買入，超買 (高於賣出界線) 賣出
         elif strat_name == "RSI 超買超賣":
             delta = data['close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(p['period']).mean()
@@ -128,6 +163,7 @@ class IndicatorCalculator:
             sig[rsi > p['sell']] = 0
             return sig.ffill().fillna(0).astype(int)
             
+        # 策略 4：MACD 快線突破慢線 (柱狀圖 > 0) 買入，反之賣出
         elif strat_name == "MACD 柱狀圖/交叉":
             ema_fast = data['close'].ewm(span=p['fast'], adjust=False).mean()
             ema_slow = data['close'].ewm(span=p['slow'], adjust=False).mean()
@@ -135,6 +171,7 @@ class IndicatorCalculator:
             signal = macd.ewm(span=p['signal'], adjust=False).mean()
             return (macd > signal).astype(int)
             
+        # 策略 5：KD 指標 K 值低於超賣區買入，高於超買區賣出
         elif strat_name == "KD 隨機指標":
             low_min = data['low'].rolling(p['period']).min()
             high_max = data['high'].rolling(p['period']).max()
@@ -149,21 +186,26 @@ class IndicatorCalculator:
 
 
 # ==========================================
-# 3. 回測引擎模組 (Backtest Engine Module)
+# 3. 核心交易回測引擎模組 (Backtest Engine Module)
 # ==========================================
 class BacktestEngine:
+    """
+    【回測引擎模組】模擬真實交易過程，每日逐筆計算「現金」、「持股股數」、「總資產價值」與「交易手續費」。
+    """
+    
     @staticmethod
     def run_dca_strategy(df, init_capital, monthly_inflow, freq_type, dca_amount, custom_days, fee, slip):
         """
-        合併 Buy & Hold 與 DCA 的統一引擎：
-        - 第 1 天若有初始本金 (init_capital > 0)，先單筆一次性投入買入。
-        - 每月新增可投入資金注入現金池。
-        - 依照設定頻率 (每月/每週/自訂天數)，若現金池有資金則進行 DCA 買入。
+        【功能】定期定額 / 買入持有 (DCA / Buy & Hold) 統一回測邏輯：
+        1. 第 1 天：若有期初本金 (init_capital > 0)，單筆一次性全數買入（Buy & Hold 邏輯）。
+        2. 後續每月：注入每月可投入資金至現金池。
+        3. 扣款日：依據設定頻率 (每月/每週/自訂天數) 執行固定金額扣款買入 (DCA 邏輯)。
         """
         data = df.copy()
         total_days = len(data)
         month_changed = (pd.Series(data.index.month, index=data.index) != pd.Series(data.index.month, index=data.index).shift(1))
         
+        # 設定扣款日期遮罩
         if freq_type == "每月 (Monthly)":
             buy_mask = month_changed
         elif freq_type == "每週 (Weekly)":
@@ -180,18 +222,18 @@ class BacktestEngine:
         for i in range(total_days):
             curr_date = data.index[i]
             
-            # 月份變更：新增每月可投入資金
+            # 每月月初：新資金注入現金帳戶
             if i > 0 and month_changed.iloc[i]:
                 cash += monthly_inflow
                 total_invested += monthly_inflow
                 
-            # 第 1 天：若有初始本金，單筆一次性全部投入買入
+            # 【第 1 天】如果有期初本金，立刻一次性單筆買入
             if i == 0 and cash > 0:
                 buy_price = data['close'].iloc[i] * (1 + fee + slip)
                 shares += cash / buy_price
                 cash = 0.0
                 trade_count += 1
-            # 後續扣款日：執行定期定額買入
+            # 【扣款日】執行定期定額扣款買入
             elif curr_date in buy_indices and cash > 0 and dca_amount > 0:
                 actual_buy = min(cash, dca_amount)
                 buy_price = data['close'].iloc[i] * (1 + fee + slip)
@@ -199,6 +241,7 @@ class BacktestEngine:
                 cash -= actual_buy
                 trade_count += 1
                 
+            # 結算當日資產市值
             stock_val = shares * data['close'].iloc[i]
             portfolio_vals.append(cash + stock_val)
             cash_hist.append(cash)
@@ -214,6 +257,10 @@ class BacktestEngine:
 
     @staticmethod
     def run_dip_dca(df, init_capital, monthly_inflow, p, fee, slip):
+        """
+        【功能】跌破均線且創新低買入 (DipDCA 抄底策略)：
+        只有在價格『跌破均線』且『創下該次跌破區間的新低價』時，才會觸發加碼扣款。
+        """
         data = df.copy()
         sma = IndicatorCalculator.calculate_ma(data, p['sma_period'], p['timeframe'])
         total_days = len(data)
@@ -231,7 +278,10 @@ class BacktestEngine:
                 total_invested += monthly_inflow
                 
             price, sma_val = data['close'].iloc[i], sma.iloc[i]
+            
+            # 判斷是否跌破均線
             if not np.isnan(sma_val) and price < sma_val:
+                # 判斷是否低於區間最低價（創新低）
                 if price < min_price_in_dip:
                     if (i - last_buy_idx >= p['min_interval']) and cash > 0:
                         actual_buy = min(cash, p['buy_amount'])
@@ -242,6 +292,7 @@ class BacktestEngine:
                         min_price_in_dip = price
                         trade_count += 1
             else:
+                # 重新站回均線之上，重置區間最低價紀錄
                 min_price_in_dip = float('inf')
                 
             stock_val = shares * price
@@ -259,9 +310,17 @@ class BacktestEngine:
 
     @staticmethod
     def run_timing_strategy(df, signal_series, fee, tax, slip, init_capital, monthly_inflow):
+        """
+        【功能】擇時技術指標策略回測引擎：
+        - 出現買入訊號（空轉多）：將當前帳上累積的所有現金『全額一次性買入』。
+        - 出現賣出訊號（多轉空）：清倉變現，現金留在池子中。
+        - 持倉期間每月進來的注資先存於現金池，直到下一次『新買入訊號』出現時一併投入。
+        """
         data = df.copy()
         total_days = len(data)
         month_changed = (pd.Series(data.index.month, index=data.index) != pd.Series(data.index.month, index=data.index).shift(1))
+        
+        # 使用上一日的訊號作為今日開盤/收盤操作依據（避免未來視/Look-ahead bias）
         position = signal_series.shift(1).fillna(0)
         
         cash, total_invested, shares = init_capital, init_capital, 0.0
@@ -277,12 +336,14 @@ class BacktestEngine:
             prev_pos = position.iloc[i-1] if i > 0 else 0.0
             price = data['close'].iloc[i]
             
+            # 【買入訊號】從 0 變 1：把累積的現金全數買入股票
             if pos > 0 and prev_pos == 0:
                 if cash > 0:
                     buy_price = price * (1 + fee + slip)
                     shares += cash / buy_price
                     cash = 0.0
                     trade_count += 1
+            # 【賣出訊號】從 1 變 0：全數賣出股票變換為現金（扣除證交稅與手續費）
             elif pos == 0 and prev_pos > 0 and shares > 0:
                 sell_price = price * (1 - fee - tax - slip)
                 cash += shares * sell_price
@@ -304,9 +365,14 @@ class BacktestEngine:
 
 
 # ==========================================
-# 4. 績效評估模組 (Performance Module)
+# 4. 績效評估與統計模組 (Performance Module)
 # ==========================================
 class PerformanceEvaluator:
+    """
+    【績效模組】計算總報酬率、CAGR 年化報酬率、最大歷史回撤 (MDD) 與交易次數，
+    並精確排除『未投入之剩餘現金』，確保報酬率真實無偏。
+    """
+    
     @staticmethod
     def evaluate(df, curr_symbol):
         total_days = len(df)
@@ -318,7 +384,7 @@ class PerformanceEvaluator:
         final_stock_val = df['stock_value'].iloc[-1]
         final_cash = df['cash'].iloc[-1]
         
-        # 實際投入本金 = 累積注入總資金 - 最終未投入之剩餘現金
+        # 關鍵修正：實際投入本金 = 總累計入金 - 最終剩餘未買入的現金
         actual_invested = gross_invested - final_cash
         
         if actual_invested > 0:
@@ -326,10 +392,9 @@ class PerformanceEvaluator:
             total_return = net_profit / actual_invested
             cagr = (((final_stock_val / actual_invested) ** (252 / total_days)) - 1)
         else:
-            net_profit = 0.0
-            total_return = 0.0
-            cagr = 0.0
+            net_profit, total_return, cagr = 0.0, 0.0, 0.0
             
+        # 計算最大回撤 (Max Drawdown, MDD)
         cum_max = df['equity_net'].cummax()
         dd = (df['equity_net'] - cum_max) / (cum_max + 1e-9)
         mdd = dd.min()
@@ -351,29 +416,32 @@ class PerformanceEvaluator:
 
 
 # ==========================================
-# 5. UI 介面與主流程控制 (Streamlit UI)
+# 5. UI 介面與控制主流程 (Streamlit UI Controller)
 # ==========================================
-st.title("📈 多市場與多策略比較回測系統 (DCA與單筆合併版)")
+st.title("📈 多市場與多策略比較回測系統")
 
-# --- 側邊欄 1：選擇標的與資產 ---
+# --- 側邊欄控制區 1：選擇標的與資金 ---
 st.sidebar.header("1. 選擇標的與資產")
 
 all_flat_presets = []
 for m_list in DataFetcher.PRESET_OPTIONS.values():
     all_flat_presets.extend(m_list)
 
+# 熱門標的多選下拉選單
 selected_presets = st.sidebar.multiselect(
     "下拉選取熱門標的 (可跨市場多選)",
     options=all_flat_presets,
     default=["0050 (元大台灣50)", "QQQ (納斯達克100)", "BTC-USD (比特幣)"]
 )
 
+# 額外自訂代碼輸入框
 custom_input_extra = st.sidebar.text_input(
     "額外補充自訂代碼 (逗號隔開)",
     value="",
     help="如需補充下拉選單沒有的標的，請在此輸入（例如：2330, NVDA）"
 )
 
+# 解析並合併標的（自動去重）
 preset_symbols = [p.split(" ")[0].strip().upper() for p in selected_presets]
 extra_symbols = [s.strip().upper() for s in custom_input_extra.split(",") if s.strip()]
 target_symbols = list(dict.fromkeys(preset_symbols + extra_symbols))
@@ -383,6 +451,7 @@ initial_capital = st.sidebar.number_input("期初投入本金", value=300000 if 
 monthly_inflow = st.sidebar.number_input("每月固定新增可投入資金", value=30000 if "TWD" in user_currency else 1000, step=1000)
 reinvest_dividends = st.sidebar.checkbox("計入股利再投入", value=True)
 
+# 選擇時間跨度
 time_option = st.sidebar.selectbox("回測時間跨度", ["近 3 年", "近 5 年", "近 10 年", "自訂日期範圍"], index=1)
 today = pd.to_datetime("today")
 if time_option == "近 3 年":
@@ -395,7 +464,7 @@ else:
     start_date = st.sidebar.date_input("開始日期", value=pd.to_datetime("2015-01-01"))
     end_date = st.sidebar.date_input("結束日期", value=today)
 
-# --- 側邊欄 2：交易成本設定 ---
+# --- 側邊欄控制區 2：交易成本 ---
 st.sidebar.header("2. 交易成本設定")
 auto_cost_toggle = st.sidebar.checkbox("依據各資產類別自動設定交易成本", value=True, help="勾選後，台股、美股、加密貨幣將分別套用各自合理的預設手續費與證交稅率。")
 
@@ -404,7 +473,7 @@ if not auto_cost_toggle:
     tax_input = st.sidebar.number_input("賣出證交稅 (%)", value=0.10, step=0.01, format="%.2f") / 100
     slip_input = st.sidebar.number_input("單邊預估滑點 (%)", value=0.02, step=0.01, format="%.2f") / 100
 
-# --- 側邊欄 3：選擇與設定策略 ---
+# --- 側邊欄控制區 3：策略選擇與設定 ---
 st.sidebar.header("3. 選擇與設定策略")
 available_strats = [
     "定期定額 / 買入持有 (DCA / Buy & Hold)", 
@@ -450,17 +519,18 @@ if "MACD 柱狀圖/交叉" in selected_strategies:
 if "KD 隨機指標" in selected_strategies:
     params["KD"] = {"period": 9, "buy_k": 20, "sell_k": 80}
 
-# --- 側邊欄 4：自訂顯示欄位 ---
+# --- 側邊欄控制區 4：自訂表格顯示欄位 ---
 st.sidebar.header("4. 自訂顯示欄位")
 all_metrics_cols = ["實際總投入本金", "最終資產金額", "最終持股市值", "最終剩餘現金", "總報酬率", "CAGR 年化報酬", "Max Drawdown (MDD)", "累積交易次數"]
 selected_cols = st.sidebar.multiselect("表格數據欄位", all_metrics_cols, default=all_metrics_cols)
 
-# --- 主程式執行區塊 ---
+# --- 主程式執行按鈕與畫面渲染 ---
 if st.sidebar.button("開始多策略與多資產回測"):
     if not target_symbols:
         st.error("請至少選擇或輸入一個標的代碼！")
     else:
         with st.spinner("正在獲取數據與運算回測結果..."):
+            # 1. 向數據模組請求數據
             data_dict, curr_sym = DataFetcher.load_data_and_fx(
                 target_symbols, 
                 start_date, 
@@ -475,13 +545,16 @@ if st.sidebar.button("開始多策略與多資產回測"):
                 matrix_results = []
                 fig = go.Figure()
                 
+                # 2. 針對每個標的與選定的策略進行交叉回測
                 for sym, data in data_dict.items():
+                    # 決定交易成本
                     if auto_cost_toggle:
                         fee_rate, tax_rate, slippage = DataFetcher.get_asset_costs(sym)
                     else:
                         fee_rate, tax_rate, slippage = fee_input, tax_input, slip_input
 
                     for strat in selected_strategies:
+                        # 路由到對應的策略回測引擎
                         if strat == "定期定額 / 買入持有 (DCA / Buy & Hold)":
                             res = BacktestEngine.run_dca_strategy(
                                 data, initial_capital, monthly_inflow, 
@@ -495,22 +568,27 @@ if st.sidebar.button("開始多策略與多資產回測"):
                             sig = IndicatorCalculator.generate_signal(data, strat, params.get(p_key, {}))
                             res = BacktestEngine.run_timing_strategy(data, sig, fee_rate, tax_rate, slippage, initial_capital, monthly_inflow)
                         
+                        # 3. 計算績效數據
                         m = PerformanceEvaluator.evaluate(res, curr_sym)
                         m_row = {"標的": sym, "策略": strat, **m}
                         matrix_results.append(m_row)
                         
+                        # 4. 繪製資產成長曲線
                         curve_label = f"{sym}-{strat}" if len(data_dict) > 1 else strat
                         fig.add_trace(go.Scatter(x=res.index, y=res['portfolio_value'], name=f"{curve_label} ({curr_sym}{m['_raw_final']:,.0f})"))
 
+                # 5. 輸出績效對比總表
                 st.subheader("📊 績效與金額對比總表")
                 results_df = pd.DataFrame(matrix_results)
                 display_cols = ["標的", "策略"] + [c for c in selected_cols if c in results_df.columns]
                 st.dataframe(results_df[display_cols].set_index(["標的", "策略"]), use_container_width=True)
 
+                # 6. 若有多個標的，輸出『多資產 x 多策略』總報酬率對比矩陣
                 if len(data_dict) > 1:
                     st.subheader("🔀 多資產 × 多策略 總報酬率矩陣 (%)")
                     pivot_df = results_df.pivot(index="標的", columns="策略", values="_raw_return") * 100
                     
+                    # 格式化矩陣：最高報酬率自動加上 👑 符號
                     def format_matrix_with_crown(df):
                         formatted_df = df.copy().astype(object)
                         for row in df.index:
@@ -528,6 +606,7 @@ if st.sidebar.button("開始多策略與多資產回測"):
                     formatted_matrix = format_matrix_with_crown(pivot_df)
                     st.dataframe(formatted_matrix, use_container_width=True)
 
+                # 7. 渲染資產成長曲線圖
                 st.subheader("📈 資產成長曲線圖")
                 fig.update_layout(xaxis_title="日期", yaxis_title=f"資產總額 ({curr_sym})", height=500)
                 st.plotly_chart(fig, use_container_width=True)
