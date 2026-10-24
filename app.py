@@ -330,15 +330,23 @@ class PerformanceEvaluator:
         if total_days < 2:
             return {}
             
-        actual_invested = df['total_invested'].iloc[-1]
+        gross_invested = df['total_invested'].iloc[-1]
         final_value = df['portfolio_value'].iloc[-1]
         final_stock_val = df['stock_value'].iloc[-1]
         final_cash = df['cash'].iloc[-1]
         
-        net_profit = final_value - actual_invested
-        total_return = net_profit / actual_invested if actual_invested > 0 else 0.0
-        cagr = (((final_value / actual_invested) ** (252 / total_days)) - 1) if actual_invested > 0 else 0.0
+        # 修正：實際投入本金 = 累積注入總資金 - 最終未投入之剩餘現金
+        actual_invested = gross_invested - final_cash
         
+        if actual_invested > 0:
+            net_profit = final_stock_val - actual_invested
+            total_return = net_profit / actual_invested
+            cagr = (((final_stock_val / actual_invested) ** (252 / total_days)) - 1)
+        else:
+            net_profit = 0.0
+            total_return = 0.0
+            cagr = 0.0
+            
         cum_max = df['equity_net'].cummax()
         dd = (df['equity_net'] - cum_max) / (cum_max + 1e-9)
         mdd = dd.min()
@@ -362,7 +370,7 @@ class PerformanceEvaluator:
 # ==========================================
 # 5. UI 介面與主流程控制 (Streamlit UI)
 # ==========================================
-st.title("📈 多市場與多策略比較回測系統 (動態成本版)")
+st.title("📈 多市場與多策略比較回測系統 (動態成本與精確本金版)")
 
 # --- 側邊欄 1：選擇標的與資產 ---
 st.sidebar.header("1. 選擇標的與資產")
@@ -475,7 +483,6 @@ if st.sidebar.button("開始多策略與多資產回測"):
                 fig = go.Figure()
                 
                 for sym, data in data_dict.items():
-                    # 動態取得每個標的專屬成本
                     if auto_cost_toggle:
                         fee_rate, tax_rate, slippage = DataFetcher.get_asset_costs(sym)
                     else:
