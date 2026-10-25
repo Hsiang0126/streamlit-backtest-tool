@@ -54,7 +54,6 @@ class DataFetcher:
         if t.endswith(unsupported_suffixes):
             return "UNKNOWN"
             
-        # 通用美股與加密貨幣代碼結構判斷
         if (t.isalpha() and 1 <= len(t) <= 5) or t.endswith("-USD"):
             return "USD"
         return "UNKNOWN"
@@ -312,7 +311,7 @@ class IndicatorCalculator:
                 buy, sell = float(p["buy_k"]), float(p["sell_k"])
             except (KeyError, TypeError, ValueError):
                 raise ValueError("KD 買入與賣出門檻必須是數值。")
-            if not np.isfinite([buy, sell]).all() or not (0 <= buy < sell ≤ 100):
+            if not np.isfinite([buy, sell]).all() or not (0 <= buy < sell <= 100):
                 raise ValueError("KD 門檻必須符合 0 ≤ buy_k < sell_k ≤ 100。")
         else:
             raise ValueError(f"不支援的策略名稱：{strat_name}")
@@ -486,12 +485,6 @@ class BacktestEngine:
     @staticmethod
     def run_dca_strategy(df, init_capital, monthly_inflow, freq_type, dca_amount,
                          custom_days, fee, slip, reinvest_idle=True):
-        """定期定額／買入持有策略。
-
-        Parameters:
-            reinvest_idle (bool): 若為 True，扣款日會將帳戶所有可用現金（含股利與積累資金）
-                                 全額滾動投入，消除 Cash Drag；若為 False 則僅扣固定金額。
-        """
         data = df.copy()
         init_capital, monthly_inflow = BacktestEngine._validate_capital_inputs(init_capital, monthly_inflow)
         fee, _, slip = BacktestEngine._validate_cost_inputs(fee, 0.0, slip)
@@ -937,7 +930,6 @@ class PerformanceEvaluator:
         dates.append(df.index[-1])
         xirr = cls._calculate_xirr(cashflows, dates)
 
-        # 計算風險指標 (Sharpe, Sortino, Volatility)
         risk_metrics = cls.calculate_risk_metrics(df)
         sharpe_val = risk_metrics.get("sharpe_ratio", np.nan)
         sortino_val = risk_metrics.get("sortino_ratio", np.nan)
@@ -1249,7 +1241,6 @@ if st.sidebar.button("開始多策略與多資產回測"):
                     display_cols = ["標的", "策略"] + [c for c in selected_cols if c in results_df.columns]
                     st.dataframe(results_df[display_cols].set_index(["標的", "策略"]), use_container_width=True)
 
-                    # 數據 CSV 匯出
                     csv_data = results_df[display_cols].to_csv(index=False, encoding="utf-8-sig")
                     st.download_button(
                         label="📥 下載績效對比總表 (CSV)",
