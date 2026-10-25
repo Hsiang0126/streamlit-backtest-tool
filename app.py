@@ -79,6 +79,44 @@ class DataFetcher:
             return frame
         return downloaded.copy() if single_ticker else pd.DataFrame()
 
+    @staticmethod
+    def _convert_prices_to_target_currency(data, fx_close, target_currency):
+        """換算跨幣別 OHLC：開盤價使用前一個可用匯率，避免把當日 FX 收盤價帶入開盤成交。
+
+        收盤估值與股利仍使用當日可取得的日線匯率近似值；高低價會擴展至涵蓋換算後的
+        open/close，確保 OHLC 結構一致。若沒有前一個可用匯率，該列不參與回測。
+        """
+        if data is None or data.empty or fx_close is None or fx_close.empty:
+            return pd.DataFrame(columns=data.columns if data is not None else [])
+        rates = pd.to_numeric(fx_close, errors="coerce")
+        rates.index = pd.to_datetime(rates.index)
+        rates = rates.replace([np.inf, -np.inf], np.nan).dropna()
+        rates = rates[rates > 0].sort_index()
+        current_fx = rates.reindex(data.index, method="ffill")
+        prior_fx = rates.shift(1).reindex(data.index, method="ffill")
+        valid = current_fx.notna() & prior_fx.notna() & (current_fx > 0) & (prior_fx > 0)
+        converted = data.loc[valid].copy()
+        current_fx = current_fx.loc[valid].astype(float)
+        prior_fx = prior_fx.loc[valid].astype(float)
+        if converted.empty:
+            return converted
+        if target_currency == "TWD":
+            close_multiplier = current_fx
+            open_multiplier = prior_fx
+        else:
+            close_multiplier = 1.0 / current_fx
+            open_multiplier = 1.0 / prior_fx
+        converted["open"] = converted["open"].astype(float) * open_multiplier
+        for col in ("close", "high", "low"):
+            converted[col] = converted[col].astype(float) * close_multiplier
+        if "dividend" in converted.columns:
+            converted["dividend"] = converted["dividend"].astype(float) * close_multiplier
+        # 不同時間點匯率換算會令 OHLC 輕微交叉；將 high/low 修正為保守有效區間。
+        converted["high"] = converted[["high", "open", "close"]].max(axis=1)
+        converted["low"] = converted[["low", "open", "close"]].min(axis=1)
+        converted["fx_rate_usdtwd"] = current_fx
+        return converted
+
     @classmethod
     @st.cache_data(show_spinner=False)
     def load_data_and_fx(cls, tickers, start, end, auto_adjust=True, user_curr="新台幣 (TWD)", currency_overrides=None):
@@ -163,7 +201,9 @@ class DataFetcher:
         fx_close = None
         if needed_fx:
             try:
-                fx_raw = yf.download("USDTWD=X", start=start, end=end, auto_adjust=True, progress=False)
+                # 多抓取前置匯率，讓開始日開盤成交可使用當日前已知的上一筆匯率。
+                fx_start = pd.Timestamp(start) - pd.Timedelta(days=10)
+                fx_raw = yf.download("USDTWD=X", start=fx_start, end=end, auto_adjust=True, progress=False)
                 fx_frame = cls._extract_ticker_frame(fx_raw, "USDTWD=X", True)
                 if not fx_frame.empty and "Close" in fx_frame.columns:
                     fx_close = pd.to_numeric(fx_frame["Close"], errors="coerce")
@@ -188,20 +228,15 @@ class DataFetcher:
                 warnings.append(f"{ticker}：缺少必要匯率資料，已略過。")
                 del processed_data[ticker]
                 continue
-            fx = fx_close.reindex(data.index, method="ffill")
-            valid = fx.notna() & (fx > 0)
-            data = data.loc[valid].copy()
-            fx = fx.loc[valid]
+            original_rows = len(data)
+            data = cls._convert_prices_to_target_currency(data, fx_close, target_currency)
             if data.empty:
-                warnings.append(f"{ticker}：價格日期無法對應到有效匯率，已略過。")
+                warnings.append(f"{ticker}：缺少可用的當日／前一交易日匯率，無法安全換算，已略過。")
                 del processed_data[ticker]
                 continue
-            # 對每個交易日分別換算估值價格，才能反映持有期間的匯率變化。
-            # 股利也按事件當日匯率換算；split 是股數比例，不能換匯。
-            multiplier = fx if target_currency == "TWD" else (1.0 / fx)
-            for col in ("open", "close", "high", "low", "dividend"):
-                data[col] = data[col] * multiplier
-            data["fx_rate_usdtwd"] = fx.astype(float)
+            if len(data) < original_rows:
+                warnings.append(f"{ticker}：為避免開盤成交使用未來匯率，已排除缺少前置匯率的 {original_rows - len(data)} 筆資料。")
+            warnings.append(f"{ticker}：跨幣別換算為近似值；開盤價使用前一筆可用匯率，收盤估值與股利使用當日匯率。")
             processed_data[ticker] = data
 
         # quote_currency 僅供轉換內部使用，移除以免被指標或策略誤當數值欄位。
@@ -248,11 +283,19 @@ class IndicatorCalculator:
             
         # 策略 3：RSI 超賣 (低於買入界線) 買入，超買 (高於賣出界線) 賣出
         elif strat_name == "RSI 超買超賣":
+            # 使用 Wilder 平滑法（常見 RSI 定義），避免簡單移動平均造成指標跳動。
+            # 平盤時平均漲幅與平均跌幅皆為 0，RSI 定義為 50，而不是錯誤地判成超賣。
+            period = max(1, int(p['period']))
             delta = data['close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(p['period']).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(p['period']).mean()
-            rs = gain / (loss + 1e-9)
+            gain = delta.clip(lower=0)
+            loss = (-delta).clip(lower=0)
+            avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+            avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+            rs = avg_gain / avg_loss.replace(0, np.nan)
             rsi = 100 - (100 / (1 + rs))
+            rsi = rsi.mask((avg_gain == 0) & (avg_loss == 0), 50.0)
+            rsi = rsi.mask((avg_gain > 0) & (avg_loss == 0), 100.0)
+            rsi = rsi.mask((avg_gain == 0) & (avg_loss > 0), 0.0)
             sig = pd.Series(np.nan, index=data.index)
             sig[rsi < p['buy']] = 1
             sig[rsi > p['sell']] = 0
@@ -270,7 +313,10 @@ class IndicatorCalculator:
         elif strat_name == "KD 隨機指標":
             low_min = data['low'].rolling(p['period']).min()
             high_max = data['high'].rolling(p['period']).max()
-            rsv = (data['close'] - low_min) / (high_max - low_min + 1e-9) * 100
+            price_range = high_max - low_min
+            # 區間完全持平時 RSV 定義為中性 50，避免被誤判為超賣。
+            rsv = (data['close'] - low_min) / price_range.replace(0, np.nan) * 100
+            rsv = rsv.mask(price_range == 0, 50.0)
             k = rsv.ewm(com=2, adjust=False).mean()
             sig = pd.Series(np.nan, index=data.index)
             sig[k < p['buy_k']] = 1
@@ -301,16 +347,36 @@ class BacktestEngine:
 
     @staticmethod
     def _validate_price_columns(df, require_open=False):
-        """驗證回測所需價格欄位，拒絕非正數或無效收盤價。"""
+        """驗證價格欄位的有限性、正值及 OHLC 內部一致性。"""
+        if df is None or df.empty:
+            raise ValueError("價格資料為空。")
         if "close" not in df.columns:
             raise ValueError("價格資料缺少 close 欄位。")
-        close = pd.to_numeric(df["close"], errors="coerce").to_numpy(dtype=float)
-        if not np.isfinite(close).all() or (close <= 0).any():
-            raise ValueError("close 價格必須全部是有限正數。")
-        if require_open and "open" in df.columns:
-            op = pd.to_numeric(df["open"], errors="coerce").to_numpy(dtype=float)
-            if not np.isfinite(op).all() or (op <= 0).any():
-                raise ValueError("open 價格必須全部是有限正數。")
+
+        checked = ["close"]
+        if require_open:
+            if "open" not in df.columns:
+                raise ValueError("此策略需要 open 欄位才能模擬下一交易日開盤成交。")
+            checked.append("open")
+        checked.extend(c for c in ("open", "high", "low") if c in df.columns and c not in checked)
+
+        arrays = {}
+        for col in checked:
+            values = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
+            if not np.isfinite(values).all() or (values <= 0).any():
+                raise ValueError(f"{col} 價格必須全部是有限正數。")
+            arrays[col] = values
+
+        # 若 OHLC 欄位齊全，檢查高低價是否涵蓋當日開盤與收盤價。
+        if all(c in arrays for c in ("open", "high", "low", "close")):
+            op, hi, lo, cl = (arrays[c] for c in ("open", "high", "low", "close"))
+            tol = np.maximum(np.maximum(np.abs(hi), np.abs(lo)), 1.0) * 1e-8
+            if np.any(hi + tol < np.maximum(op, cl)):
+                raise ValueError("OHLC 資料不一致：high 低於 open 或 close。")
+            if np.any(lo - tol > np.minimum(op, cl)):
+                raise ValueError("OHLC 資料不一致：low 高於 open 或 close。")
+        if not df.index.is_monotonic_increasing or df.index.has_duplicates:
+            raise ValueError("價格資料索引必須依日期遞增且不得重複。")
 
     @staticmethod
     def _buy_fill_price(reference_price, fee, slip):
@@ -456,13 +522,13 @@ class BacktestEngine:
 
     @staticmethod
     def run_dip_dca(df, init_capital, monthly_inflow, p, fee, slip):
-        """跌破均線且創新低加碼；最低價追蹤與買入限制分開處理。"""
+        """跌破均線且創新低加碼；以收盤形成訊號，下一交易日開盤成交。"""
         data = df.copy()
         init_capital, monthly_inflow = BacktestEngine._validate_capital_inputs(init_capital, monthly_inflow)
         total_days = len(data)
         if total_days == 0:
             return data
-        BacktestEngine._validate_price_columns(data)
+        BacktestEngine._validate_price_columns(data, require_open=True)
 
         sma = IndicatorCalculator.calculate_ma(
             data, p["sma_period"], p.get("timeframe", "日線 (Daily)")
@@ -473,8 +539,10 @@ class BacktestEngine:
 
         cash, shares, trade_count = float(init_capital), 0.0, 0
         portfolio_vals, cash_hist, stock_hist, external_flows = [], [], [], []
-        last_buy_idx = -max(1, int(p.get("min_interval", 1)))
+        min_interval = max(1, int(p.get("min_interval", 1)))
+        last_buy_idx = -min_interval
         min_price_in_dip = float("inf")
+        pending_buy = False
 
         for i, date in enumerate(data.index):
             shares, cash = BacktestEngine._apply_corporate_actions(data, i, shares, cash)
@@ -483,20 +551,24 @@ class BacktestEngine:
                 flow = float(monthly_inflow)
                 cash += flow
 
+            # 只執行前一交易日收盤後已知的訊號，成交價格使用當日開盤價。
+            if pending_buy and (i - last_buy_idx >= min_interval) and cash > 0:
+                amount = min(cash, max(0.0, float(p.get("buy_amount", 0.0))))
+                if amount > 0:
+                    buy_price = BacktestEngine._buy_fill_price(float(data["open"].iloc[i]), fee, slip)
+                    shares += amount / buy_price
+                    cash -= amount
+                    last_buy_idx = i
+                    trade_count += 1
+            pending_buy = False
+
             price = float(data["close"].iloc[i])
             sma_val = sma.iloc[i]
             if pd.notna(sma_val) and price < float(sma_val):
                 is_new_low = price < min_price_in_dip
-                # 無論是否允許下單，都要更新區間最低價。
+                # 無論是否允許下單，都要更新區間最低價；訊號只供下一交易日使用。
                 min_price_in_dip = min(min_price_in_dip, price)
-                if is_new_low and (i - last_buy_idx >= max(1, int(p.get("min_interval", 1)))) and cash > 0:
-                    amount = min(cash, max(0.0, float(p.get("buy_amount", 0.0))))
-                    if amount > 0:
-                        buy_price = BacktestEngine._buy_fill_price(price, fee, slip)
-                        shares += amount / buy_price
-                        cash -= amount
-                        last_buy_idx = i
-                        trade_count += 1
+                pending_buy = bool(is_new_low)
             else:
                 min_price_in_dip = float("inf")
 
@@ -628,17 +700,34 @@ class PerformanceEvaluator:
             return {}
 
         # 排除非有限數值，避免損壞資料將績效指標傳染成無限值或錯誤結果。
-        numeric_cols = ["portfolio_value", "stock_value", "cash", "total_invested", "equity_net", "external_flow"]
+        numeric_cols = ["portfolio_value", "stock_value", "cash", "total_invested", "equity_net", "external_flow", "trades"]
         numeric_values = df[numeric_cols].to_numpy(dtype=float)
         if not np.isfinite(numeric_values).all():
             return {}
-        # 資產負值或資產帳務無法對帳時，拒絕輸出績效，避免呈現看似精確的錯誤結果。
+        # 資產負值、負淨值指數或交易次數異常時，拒絕輸出績效。
         if (df[["portfolio_value", "stock_value", "cash", "total_invested"]] < -1e-8).any().any():
+            return {}
+        if (df["equity_net"] < -1e-8).any() or (df["trades"] < 0).any():
+            return {}
+        trades = df["trades"].to_numpy(dtype=float)
+        if not np.allclose(trades, np.round(trades), rtol=0, atol=1e-8):
             return {}
         reconciled = df["stock_value"].astype(float) + df["cash"].astype(float)
         if not np.allclose(df["portfolio_value"].astype(float), reconciled, rtol=1e-7, atol=1e-6):
             return {}
         if not df.index.is_monotonic_increasing or df.index.has_duplicates:
+            return {}
+
+        if initial_capital is None:
+            initial_capital = float(df["total_invested"].iloc[0] - df["external_flow"].iloc[0])
+        try:
+            initial_capital = float(initial_capital)
+        except (TypeError, ValueError):
+            return {}
+        if not np.isfinite(initial_capital) or initial_capital < 0:
+            return {}
+        expected_invested = initial_capital + df["external_flow"].astype(float).cumsum()
+        if not np.allclose(df["total_invested"].astype(float), expected_invested, rtol=1e-7, atol=1e-6):
             return {}
 
         final_value = float(df["portfolio_value"].iloc[-1])
@@ -663,8 +752,6 @@ class PerformanceEvaluator:
         mdd = float(drawdown.min()) if drawdown.notna().any() else 0.0
 
         # XIRR：初始本金與後續入金視為負現金流，期末總資產視為正現金流。
-        if initial_capital is None:
-            initial_capital = float(df["total_invested"].iloc[0])
         cashflows = [-float(initial_capital)]
         dates = [df.index[0]]
         for date, flow in df["external_flow"].iloc[1:].items():
@@ -850,7 +937,8 @@ if st.sidebar.button("開始多策略與多資產回測"):
             data_dict, curr_sym, data_warnings = DataFetcher.load_data_and_fx(
                 target_symbols,
                 start_date,
-                end_date,
+                # Yahoo Finance 的 end 為不包含當日的右開區間；加一天以納入使用者選定的結束日期。
+                pd.Timestamp(end_date) + pd.Timedelta(days=1),
                 auto_adjust=reinvest_dividends,
                 user_curr=user_currency,
                 currency_overrides=currency_overrides
@@ -898,11 +986,11 @@ if st.sidebar.button("開始多策略與多資產回測"):
 
                         # 4. 繪製資產成長曲線；只有通過績效驗證的策略才進圖表。
                         curve_label = f"{sym}-{strat}" if len(data_dict) > 1 else strat
-                        fig.add_trace(go.Scatter(x=res.index, y=res['portfolio_value'], name=f"{curve_label} ({curr_sym}{m['_raw_final']:,.0f})"))
+                        fig.add_trace(go.Scatter(x=res.index, y=res['equity_net'] * 100.0, name=f"{curve_label} ({m['_raw_return']:.2%} TWR)"))
 
                 # 5. 輸出績效對比總表
                 st.subheader("📊 績效與金額對比總表")
-                st.caption("TWR 用於比較策略表現；每月新增資金於當日交易前入帳。系統使用未調整 OHLC，並可依 Yahoo Finance 企業行動資料處理股利現金入帳與拆股持股數調整；股利目前留在現金、不自動再投資。資料來源若漏列企業行動，回測仍可能偏離實際結果。買賣成本以獨立乘數估算，並非券商撮合模擬。")
+                st.caption("每個標的與策略都是各自獨立回測，均使用完整的期初本金與每月入金；這不是多標的共同資金的組合回測。DCA 策略會在第一個交易日將期初本金一次投入；扣款頻率主要控制後續可用現金的買入時點，每月新增資金於當日交易前入帳。曲線顯示扣除外部入金影響的 TWR 淨值指數（期初 = 100），避免把追加本金誤看成投資績效。跨幣別回測的開盤價使用前一筆可用匯率，收盤估值與股利使用當日匯率近似，仍有時區與報價時間差。系統使用 Yahoo Finance OHLC 與企業行動資料；股利目前留在現金、不自動再投資。資料來源若漏列企業行動，結果仍可能偏離實際。買賣成本以估算乘數模擬，並非券商撮合。")
                 results_df = pd.DataFrame(matrix_results)
                 if results_df.empty:
                     st.error("沒有任何策略通過績效驗證，請檢查資料、價格及帳務警告。")
@@ -935,5 +1023,5 @@ if st.sidebar.button("開始多策略與多資產回測"):
 
                 # 7. 渲染資產成長曲線圖
                 st.subheader("📈 資產成長曲線圖")
-                fig.update_layout(xaxis_title="日期", yaxis_title=f"資產總額 ({curr_sym})", height=500)
+                fig.update_layout(xaxis_title="日期", yaxis_title="TWR 淨值指數（期初 = 100）", height=500)
                 st.plotly_chart(fig, use_container_width=True)
