@@ -80,6 +80,47 @@ class DataFetcher:
         return downloaded.copy() if single_ticker else pd.DataFrame()
 
     @staticmethod
+    def data_quality_warnings(data, ticker="標的", min_rows=60, gap_days=10, extreme_return=0.35):
+        """回報可疑資料品質訊號；只警告、不擅自刪除可能真實的市場異常。"""
+        warnings = []
+        if data is None or data.empty:
+            return [f"{ticker}：沒有可供品質檢查的價格資料。"]
+        if not isinstance(data.index, pd.DatetimeIndex):
+            return [f"{ticker}：資料索引不是日期格式，無法可靠檢查時間間隔。"]
+        if not data.index.is_monotonic_increasing or data.index.has_duplicates:
+            warnings.append(f"{ticker}：日期索引未排序或存在重複日期，回測前應檢查。")
+        if len(data) < int(min_rows):
+            warnings.append(f"{ticker}：只有 {len(data)} 筆行情，少於建議的 {min_rows} 筆；長週期指標與績效統計可能不穩定。")
+        if "close" not in data.columns:
+            warnings.append(f"{ticker}：缺少 close 欄位，無法進行完整回測。")
+            return warnings
+        close = pd.to_numeric(data["close"], errors="coerce")
+        if close.isna().any() or not np.isfinite(close.to_numpy(dtype=float)).all() or (close <= 0).any():
+            warnings.append(f"{ticker}：收盤價包含缺失、非有限或非正值。")
+        if len(data) > 1:
+            gaps = data.index.to_series().diff().dt.total_seconds().div(86400.0)
+            large_gaps = gaps[gaps > float(gap_days)]
+            if not large_gaps.empty:
+                dates = ", ".join(pd.Timestamp(d).strftime("%Y-%m-%d") for d in large_gaps.index[:3])
+                warnings.append(f"{ticker}：發現超過 {gap_days} 個日曆日的行情間隔（例如 {dates}），可能是休市或來源缺漏，請確認。")
+            returns = close.pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+            extreme = returns[returns.abs() >= float(extreme_return)]
+            if not extreme.empty:
+                dates = ", ".join(pd.Timestamp(d).strftime("%Y-%m-%d") for d in extreme.index[:3])
+                warnings.append(f"{ticker}：發現單日收盤價變動達 ±{extreme_return:.0%} 的行情（例如 {dates}）；可能是真實波動，也可能涉及拆股／資料異常，建議核對。")
+        required_ohlc = {"open", "high", "low", "close"}
+        if required_ohlc.issubset(data.columns):
+            values = data[list(required_ohlc)].apply(pd.to_numeric, errors="coerce")
+            if values.isna().any().any():
+                warnings.append(f"{ticker}：OHLC 欄位含缺失或非數值資料。")
+            else:
+                upper = values[["open", "close"]].max(axis=1)
+                lower = values[["open", "close"]].min(axis=1)
+                if (values["high"] < upper).any() or (values["low"] > lower).any():
+                    warnings.append(f"{ticker}：部分 OHLC 高低價未涵蓋開盤／收盤價，回測可能拒絕此資料。")
+        return warnings
+
+    @staticmethod
     def _convert_prices_to_target_currency(data, fx_close, target_currency):
         """換算跨幣別 OHLC：開盤價使用前一個可用匯率，避免把當日 FX 收盤價帶入開盤成交。
 
@@ -267,9 +308,58 @@ class IndicatorCalculator:
 
     @classmethod
     def generate_signal(cls, df, strat_name, p):
-        """【功能】根據選擇的技術指標策略，計算每日的買賣訊號 (1=買進持有, 0=賣出空倉)"""
+        """根據技術指標產生 0/1 訊號，並在計算前驗證資料與參數。"""
         data = df.copy()
-        
+        if data.empty or "close" not in data.columns:
+            raise ValueError("指標計算需要非空資料及 close 欄位。")
+        if not isinstance(data.index, pd.DatetimeIndex):
+            raise ValueError("指標資料索引必須是 DatetimeIndex。")
+        close = pd.to_numeric(data["close"], errors="coerce").to_numpy(dtype=float)
+        if not np.isfinite(close).all() or (close <= 0).any():
+            raise ValueError("指標計算的 close 必須全部是有限正數。")
+        if not isinstance(p, dict):
+            raise ValueError("策略參數必須是字典。")
+
+        def positive_int(key):
+            try:
+                value = float(p[key])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError(f"策略參數 {key} 必須是正整數。")
+            if not np.isfinite(value) or value < 1 or value != int(value):
+                raise ValueError(f"策略參數 {key} 必須是正整數。")
+            return int(value)
+
+        if strat_name == "價格突破均線買入/跌破賣出":
+            positive_int("period")
+        elif strat_name == "SMA 雙均線交叉":
+            fast, slow = positive_int("fast"), positive_int("slow")
+            if fast >= slow:
+                raise ValueError("SMA 雙均線交叉要求 fast 小於 slow。")
+        elif strat_name == "RSI 超買超賣":
+            positive_int("period")
+            try:
+                buy, sell = float(p["buy"]), float(p["sell"])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError("RSI 買入與賣出門檻必須是數值。")
+            if not np.isfinite([buy, sell]).all() or not (0 <= buy < sell <= 100):
+                raise ValueError("RSI 門檻必須符合 0 ≤ buy < sell ≤ 100。")
+        elif strat_name == "MACD 柱狀圖/交叉":
+            fast, slow, signal_period = positive_int("fast"), positive_int("slow"), positive_int("signal")
+            if fast >= slow:
+                raise ValueError("MACD 要求 fast 小於 slow。")
+        elif strat_name == "KD 隨機指標":
+            positive_int("period")
+            if not {"high", "low"}.issubset(data.columns):
+                raise ValueError("KD 指標需要 high 與 low 欄位。")
+            try:
+                buy, sell = float(p["buy_k"]), float(p["sell_k"])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError("KD 買入與賣出門檻必須是數值。")
+            if not np.isfinite([buy, sell]).all() or not (0 <= buy < sell <= 100):
+                raise ValueError("KD 門檻必須符合 0 ≤ buy_k < sell_k ≤ 100。")
+        else:
+            raise ValueError(f"不支援的策略名稱：{strat_name}")
+
         # 策略 1：價格突破均線買入，跌破均線賣出
         if strat_name == "價格突破均線買入/跌破賣出":
             sma = cls.calculate_ma(data, p['period'], p.get('timeframe', '日線 (Daily)'))
@@ -346,6 +436,17 @@ class BacktestEngine:
         return initial, monthly
 
     @staticmethod
+    def _validate_cost_inputs(fee, tax=0.0, slip=0.0):
+        """在回測開始時驗證成本參數，避免無交易路徑掩蓋錯誤設定。"""
+        try:
+            values = np.asarray([fee, tax, slip], dtype=float)
+        except (TypeError, ValueError):
+            raise ValueError("手續費、交易稅與滑價必須是數值。")
+        if not np.isfinite(values).all() or (values < 0).any() or (values >= 1).any():
+            raise ValueError("手續費、交易稅與滑價必須介於 0（含）與 1（不含）之間。")
+        return tuple(float(v) for v in values)
+
+    @staticmethod
     def _validate_price_columns(df, require_open=False):
         """驗證價格欄位的有限性、正值及 OHLC 內部一致性。"""
         if df is None or df.empty:
@@ -375,6 +476,8 @@ class BacktestEngine:
                 raise ValueError("OHLC 資料不一致：high 低於 open 或 close。")
             if np.any(lo - tol > np.minimum(op, cl)):
                 raise ValueError("OHLC 資料不一致：low 高於 open 或 close。")
+        if not isinstance(df.index, pd.DatetimeIndex):
+            raise ValueError("價格資料索引必須是 DatetimeIndex。")
         if not df.index.is_monotonic_increasing or df.index.has_duplicates:
             raise ValueError("價格資料索引必須依日期遞增且不得重複。")
 
@@ -464,6 +567,13 @@ class BacktestEngine:
         """定期定額／買入持有。外部入金與交易損益分開記錄。"""
         data = df.copy()
         init_capital, monthly_inflow = BacktestEngine._validate_capital_inputs(init_capital, monthly_inflow)
+        fee, _, slip = BacktestEngine._validate_cost_inputs(fee, 0.0, slip)
+        try:
+            dca_amount = float(dca_amount)
+        except (TypeError, ValueError):
+            raise ValueError("定期投入金額必須是有限非負數值。")
+        if not np.isfinite(dca_amount) or dca_amount < 0:
+            raise ValueError("定期投入金額必須是有限非負數值。")
         total_days = len(data)
         if total_days == 0:
             return data
@@ -525,6 +635,7 @@ class BacktestEngine:
         """跌破均線且創新低加碼；以收盤形成訊號，下一交易日開盤成交。"""
         data = df.copy()
         init_capital, monthly_inflow = BacktestEngine._validate_capital_inputs(init_capital, monthly_inflow)
+        fee, _, slip = BacktestEngine._validate_cost_inputs(fee, 0.0, slip)
         total_days = len(data)
         if total_days == 0:
             return data
@@ -594,6 +705,7 @@ class BacktestEngine:
         """
         data = df.copy()
         init_capital, monthly_inflow = BacktestEngine._validate_capital_inputs(init_capital, monthly_inflow)
+        fee, tax, slip = BacktestEngine._validate_cost_inputs(fee, tax, slip)
         total_days = len(data)
         if total_days == 0:
             return data
@@ -657,40 +769,103 @@ class PerformanceEvaluator:
     
     @staticmethod
     def _calculate_xirr(cashflows, dates):
-        """以 365 日為一年計算 XIRR（符合常見 XIRR day-count 慣例）；無有效解時回傳 NaN。"""
-        flows = np.asarray(cashflows, dtype=float)
-        dates = pd.to_datetime(dates)
-        if len(flows) < 2 or not (np.any(flows < 0) and np.any(flows > 0)):
+        """以 365 日為一年計算 XIRR；資料不合法或存在多重根風險時回傳 NaN。"""
+        try:
+            flows = np.asarray(cashflows, dtype=float).reshape(-1)
+            dates = pd.DatetimeIndex(pd.to_datetime(dates, errors="coerce"))
+        except (TypeError, ValueError, OverflowError):
+            return np.nan
+        if len(flows) < 2 or len(flows) != len(dates):
+            return np.nan
+        if not np.isfinite(flows).all() or dates.isna().any():
+            return np.nan
+        if not dates.is_monotonic_increasing:
+            return np.nan
+        nonzero_signs = np.sign(flows[flows != 0])
+        if len(nonzero_signs) < 2 or not (np.any(flows < 0) and np.any(flows > 0)):
+            return np.nan
+        # 多次正負號變化可能產生多個 IRR；避免任意回傳其中一個根誤導使用者。
+        sign_changes = int(np.count_nonzero(nonzero_signs[1:] != nonzero_signs[:-1]))
+        if sign_changes != 1:
             return np.nan
         years = np.asarray((dates - dates[0]).days, dtype=float) / 365.0
+        if years[-1] <= 0:
+            return np.nan
 
         def npv(rate):
             try:
-                return float(np.sum(flows / np.power(1.0 + rate, years)))
+                with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+                    value = float(np.sum(flows / np.power(1.0 + rate, years)))
+                return value if np.isfinite(value) else np.nan
             except (FloatingPointError, OverflowError, ZeroDivisionError):
                 return np.nan
 
-        low, high = -0.9999, 10.0
+        low, high = -0.999999, 10.0
         f_low, f_high = npv(low), npv(high)
-        while np.isfinite(f_low) and np.isfinite(f_high) and f_low * f_high > 0 and high < 1_000_000:
+        while np.isfinite(f_low) and np.isfinite(f_high) and np.sign(f_low) == np.sign(f_high) and high < 1_000_000:
             high = high * 2 + 1
             f_high = npv(high)
-        if not np.isfinite(f_low) or not np.isfinite(f_high) or f_low * f_high > 0:
+        if not np.isfinite(f_low) or not np.isfinite(f_high) or np.sign(f_low) == np.sign(f_high):
             return np.nan
 
-        for _ in range(200):
+        for _ in range(250):
             mid = (low + high) / 2
             f_mid = npv(mid)
             if not np.isfinite(f_mid):
                 high = mid
                 continue
-            if abs(f_mid) < 1e-7 or abs(high - low) < 1e-10:
+            if abs(f_mid) < 1e-8 or abs(high - low) < 1e-11:
                 return mid
-            if f_low * f_mid <= 0:
+            if np.sign(f_low) != np.sign(f_mid):
                 high, f_high = mid, f_mid
             else:
                 low, f_low = mid, f_mid
         return (low + high) / 2
+
+    @staticmethod
+    def evaluate_holdout_period(df, train_ratio=0.70):
+        """評估完整回測後段的 TWR 區間表現；不重新最佳化策略參數。
+
+        這是固定參數的時間切分診斷，不等同於自動參數訓練或保證獨立的樣本外研究。
+        回測帳戶與持倉連續跨越切分點，區間報酬以 equity_net 比值計算，排除外部入金影響。
+        """
+        try:
+            ratio = float(train_ratio)
+        except (TypeError, ValueError):
+            return {}
+        if not np.isfinite(ratio) or not (0.5 <= ratio <= 0.9):
+            return {}
+        if df is None or len(df) < 10 or not isinstance(df.index, pd.DatetimeIndex):
+            return {}
+        if not df.index.is_monotonic_increasing or df.index.has_duplicates or "equity_net" not in df:
+            return {}
+        equity = pd.to_numeric(df["equity_net"], errors="coerce").to_numpy(dtype=float)
+        if not np.isfinite(equity).all() or (equity < 0).any():
+            return {}
+        split = int(len(df) * ratio)
+        if split < 2 or len(df) - split < 2:
+            return {}
+        segment = equity[split:]
+        # 以前一段最後一天的淨值作為期初基準，納入驗證區間第一個交易日的報酬。
+        base_equity = float(equity[split - 1])
+        if base_equity <= 0:
+            return {}
+        normalized = segment / base_equity
+        total_return = float(normalized[-1] - 1.0)
+        elapsed_days = max((pd.Timestamp(df.index[-1]) - pd.Timestamp(df.index[split - 1])).days, 1)
+        cagr = float(normalized[-1] ** (365.25 / elapsed_days) - 1.0) if normalized[-1] > 0 else -1.0
+        with_initial = np.concatenate(([1.0], normalized))
+        peaks = np.maximum.accumulate(with_initial)
+        drawdowns = with_initial / np.where(peaks == 0, np.nan, peaks) - 1.0
+        mdd = float(np.nanmin(drawdowns)) if np.isfinite(drawdowns).any() else 0.0
+        return {
+            "驗證開始日": pd.Timestamp(df.index[split]).date().isoformat(),
+            "驗證結束日": pd.Timestamp(df.index[-1]).date().isoformat(),
+            "驗證區間 TWR": total_return,
+            "驗證區間年化 TWR": cagr,
+            "驗證區間 MDD": mdd,
+            "驗證交易日數": int(len(df) - split),
+        }
 
     @classmethod
     def evaluate(cls, df, curr_symbol, initial_capital=None):
@@ -872,6 +1047,7 @@ available_strats = [
     "KD 隨機指標"
 ]
 selected_strategies = st.sidebar.multiselect("選擇策略", available_strats, default=["定期定額 / 買入持有 (DCA / Buy & Hold)", "跌破均線且創新低買入"])
+show_holdout_analysis = st.sidebar.checkbox("顯示後段驗證區間分析（前 70%／後 30%）", value=True, help="使用固定策略參數與連續資產帳戶，將後 30% 行情作為診斷區間；若曾依全期間結果調整參數，這不是真正獨立的樣本外驗證。")
 
 params = {}
 if "定期定額 / 買入持有 (DCA / Buy & Hold)" in selected_strategies:
@@ -946,11 +1122,15 @@ if st.sidebar.button("開始多策略與多資產回測"):
 
             for warning in data_warnings:
                 st.warning(warning)
+            for quality_ticker, quality_data in data_dict.items():
+                for quality_warning in DataFetcher.data_quality_warnings(quality_data, quality_ticker):
+                    st.warning(quality_warning)
 
             if not data_dict:
                 st.error("無法獲取對應標的數據，請確認代碼與日期。")
             else:
                 matrix_results = []
+                holdout_results = []
                 fig = go.Figure()
                 
                 # 2. 針對每個標的與選定的策略進行交叉回測
@@ -983,6 +1163,10 @@ if st.sidebar.button("開始多策略與多資產回測"):
                             continue
                         m_row = {"標的": sym, "策略": strat, **m}
                         matrix_results.append(m_row)
+                        if show_holdout_analysis:
+                            holdout = PerformanceEvaluator.evaluate_holdout_period(res, train_ratio=0.70)
+                            if holdout:
+                                holdout_results.append({"標的": sym, "策略": strat, **holdout})
 
                         # 4. 繪製資產成長曲線；只有通過績效驗證的策略才進圖表。
                         curve_label = f"{sym}-{strat}" if len(data_dict) > 1 else strat
@@ -997,6 +1181,20 @@ if st.sidebar.button("開始多策略與多資產回測"):
                 else:
                     display_cols = ["標的", "策略"] + [c for c in selected_cols if c in results_df.columns]
                     st.dataframe(results_df[display_cols].set_index(["標的", "策略"]), use_container_width=True)
+
+                if show_holdout_analysis:
+                    st.subheader("🧪 後段驗證區間（固定參數診斷）")
+                    st.caption("前 70% 日期作為前段、後 30% 作為驗證區間。帳戶與持倉連續跨越切分點，指標以 TWR 淨值比值計算。這不會自動防止使用者曾依全期間結果調參，也不是完整 walk-forward 最佳化流程。")
+                    if holdout_results:
+                        holdout_df = pd.DataFrame(holdout_results)
+                        holdout_df = holdout_df.rename(columns={
+                            "驗證區間 TWR": "驗證區間 TWR",
+                            "驗證區間年化 TWR": "驗證區間年化 TWR",
+                            "驗證區間 MDD": "驗證區間 MDD",
+                        })
+                        st.dataframe(holdout_df, use_container_width=True)
+                    else:
+                        st.warning("資料長度不足或驗證區間無有效淨值，無法計算後段驗證指標。")
 
                 # 6. 若有多個標的且至少一組策略有效，輸出總報酬率對比矩陣。
                 if len(data_dict) > 1 and not results_df.empty:
