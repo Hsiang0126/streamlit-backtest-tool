@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 # ==========================================
 # 0. 頁面基本設定 (Page Config)
 # ==========================================
-st.set_page_config(layout="wide", page_title="多市場與多策略回測系統 v32.1")
+st.set_page_config(layout="wide", page_title="多市場與多策略回測系統 v33.0")
 
 
 # ==========================================
@@ -270,11 +270,15 @@ class IndicatorCalculator:
             raise ValueError("指標計算需要非空資料及 close 欄位。")
         if not isinstance(data.index, pd.DatetimeIndex):
             raise ValueError("指標資料索引必須是 DatetimeIndex。")
+        if not data.index.is_monotonic_increasing or data.index.has_duplicates:
+            raise ValueError("指標資料索引必須依日期遞增且不得重複。")
         close = pd.to_numeric(data["close"], errors="coerce").to_numpy(dtype=float)
         if not np.isfinite(close).all() or (close <= 0).any():
             raise ValueError("指標計算的 close 必須全部是有限正數。")
         if not isinstance(p, dict):
             raise ValueError("策略參數必須是字典。")
+        # Work on a copy so validation never mutates the caller's parameter dictionary.
+        p = dict(p)
 
         def positive_int(key):
             try:
@@ -286,25 +290,28 @@ class IndicatorCalculator:
             return int(value)
 
         if strat_name == "價格突破均線買入/跌破賣出":
-            positive_int("period")
+            p["period"] = positive_int("period")
         elif strat_name == "SMA 雙均線交叉":
             fast, slow = positive_int("fast"), positive_int("slow")
+            p["fast"], p["slow"] = fast, slow
             if fast >= slow:
                 raise ValueError("SMA 雙均線交叉要求 fast 小於 slow。")
         elif strat_name == "RSI 超買超賣":
-            positive_int("period")
+            p["period"] = positive_int("period")
             try:
                 buy, sell = float(p["buy"]), float(p["sell"])
             except (KeyError, TypeError, ValueError):
                 raise ValueError("RSI 買入與賣出門檻必須是數值。")
             if not np.isfinite([buy, sell]).all() or not (0 <= buy < sell <= 100):
                 raise ValueError("RSI 門檻必須符合 0 ≤ buy < sell ≤ 100。")
+            p["buy"], p["sell"] = buy, sell
         elif strat_name == "MACD 柱狀圖/交叉":
             fast, slow, signal_period = positive_int("fast"), positive_int("slow"), positive_int("signal")
+            p["fast"], p["slow"], p["signal"] = fast, slow, signal_period
             if fast >= slow:
                 raise ValueError("MACD 要求 fast 小於 slow。")
         elif strat_name == "KD 隨機指標":
-            positive_int("period")
+            p["period"] = positive_int("period")
             if not {"high", "low"}.issubset(data.columns):
                 raise ValueError("KD 指標需要 high 與 low 欄位。")
             try:
@@ -313,6 +320,7 @@ class IndicatorCalculator:
                 raise ValueError("KD 買入與賣出門檻必須是數值。")
             if not np.isfinite([buy, sell]).all() or not (0 <= buy < sell <= 100):
                 raise ValueError("KD 門檻必須符合 0 ≤ buy_k < sell_k ≤ 100。")
+            p["buy_k"], p["sell_k"] = buy, sell
         else:
             raise ValueError(f"不支援的策略名稱：{strat_name}")
 
@@ -640,6 +648,10 @@ class BacktestEngine:
         fee, tax, slip = BacktestEngine._validate_cost_inputs(fee, tax, slip)
         if signal_series is None or len(signal_series) == 0:
             raise ValueError("訊號資料為空。")
+        if not isinstance(signal_series, pd.Series):
+            raise ValueError("訊號資料必須是 pandas Series。")
+        if not signal_series.index.equals(data.index):
+            raise ValueError("訊號索引必須與價格資料索引完全一致；拒絕靜默重排或補值。")
         sig_vals = pd.to_numeric(signal_series, errors="coerce").to_numpy(dtype=float)
         if not np.isfinite(sig_vals).all() or not np.isin(sig_vals, [0, 1]).all():
             raise ValueError("擇時策略訊號必須只包含 0 或 1 的有限二元數值。")
@@ -1031,7 +1043,7 @@ class PerformanceEvaluator:
 # ==========================================
 # 5. UI 介面與控制主流程 (Streamlit UI Controller)
 # ==========================================
-st.title("📈 多市場與多策略比較回測系統 v32.1")
+st.title("📈 多市場與多策略比較回測系統 v33.0")
 
 # --- 側邊欄控制區 1：選擇標的與資金 ---
 st.sidebar.header("1. 選擇標的與資產")
@@ -1215,11 +1227,14 @@ if st.sidebar.button("開始多策略與多資產回測"):
                         fee_rate, tax_rate, slippage = fee_input, tax_input, slip_input
 
                     for strat in selected_strategies:
-                        res = BacktestEngine.run_named_strategy(
-                            data, strat, params, initial_capital, monthly_inflow, fee_rate, tax_rate, slippage
-                        )
-                        
-                        m = PerformanceEvaluator.evaluate(res, curr_sym, initial_capital=initial_capital)
+                        try:
+                            res = BacktestEngine.run_named_strategy(
+                                data, strat, params, initial_capital, monthly_inflow, fee_rate, tax_rate, slippage
+                            )
+                            m = PerformanceEvaluator.evaluate(res, curr_sym, initial_capital=initial_capital)
+                        except Exception as exc:
+                            st.warning(f"{sym}／{strat}：回測執行失敗，已略過該組結果。原因：{exc}")
+                            continue
                         if not m:
                             st.warning(f"{sym}／{strat}：績效資料未通過完整性或帳務驗證，已略過該組結果。")
                             continue
