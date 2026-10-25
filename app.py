@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 # ==========================================
 # 0. 頁面基本設定 (Page Config)
 # ==========================================
-st.set_page_config(layout="wide", page_title="多市場與多策略回測工具")
+st.set_page_config(layout="wide", page_title="多市場與多策略回測系統 v32.1")
 
 
 # ==========================================
@@ -49,11 +49,12 @@ class DataFetcher:
             return "TWD"
         if t.endswith("=X"):
             return "UNKNOWN"
-        # 常見非美元交易所後綴：未支援對應匯率路由前拒絕自動換算。
+        
         unsupported_suffixes = (".HK", ".SS", ".SZ", ".L", ".TO", ".V", ".AX", ".SI", ".KS", ".KQ", ".T", ".PA", ".DE", ".MI", ".SW", ".AS", ".BR", ".HE", ".ST", ".OL", ".CO", ".NZ")
         if t.endswith(unsupported_suffixes):
             return "UNKNOWN"
-        # 標準美股代碼判斷 (1~5 位純英文字母) 與加密貨幣
+            
+        # 通用美股與加密貨幣代碼結構判斷
         if (t.isalpha() and 1 <= len(t) <= 5) or t.endswith("-USD"):
             return "USD"
         return "UNKNOWN"
@@ -78,7 +79,6 @@ class DataFetcher:
 
     @staticmethod
     def data_quality_warnings(data, ticker="標的", min_rows=60, gap_days=10, extreme_return=0.35):
-        """回報可疑資料品質訊號；只警告、不擅自刪除可能真實的市場異常。"""
         warnings = []
         if data is None or data.empty:
             return [f"{ticker}：沒有可供品質檢查的價格資料。"]
@@ -87,7 +87,7 @@ class DataFetcher:
         if not data.index.is_monotonic_increasing or data.index.has_duplicates:
             warnings.append(f"{ticker}：日期索引未排序或存在重複日期，回測前應檢查。")
         if len(data) < int(min_rows):
-            warnings.append(f"{ticker}：只有 {len(data)} 筆行情，少於建議的 {min_rows} 筆；長週期指標與績效統計可能不穩定。")
+            warnings.append(f"{ticker}：只有 {len(data)} 筆行情，少於建議的 {min_rows} 筆。")
         if "close" not in data.columns:
             warnings.append(f"{ticker}：缺少 close 欄位，無法進行完整回測。")
             return warnings
@@ -99,27 +99,24 @@ class DataFetcher:
             large_gaps = gaps[gaps > float(gap_days)]
             if not large_gaps.empty:
                 dates = ", ".join(pd.Timestamp(d).strftime("%Y-%m-%d") for d in large_gaps.index[:3])
-                warnings.append(f"{ticker}：發現超過 {gap_days} 個日曆日的行情間隔（例如 {dates}），可能是休市或來源缺漏，請確認。")
+                warnings.append(f"{ticker}：發現超過 {gap_days} 個日曆日的行情間隔（例如 {dates}）。")
             returns = close.pct_change().replace([np.inf, -np.inf], np.nan).dropna()
             extreme = returns[returns.abs() >= float(extreme_return)]
             if not extreme.empty:
                 dates = ", ".join(pd.Timestamp(d).strftime("%Y-%m-%d") for d in extreme.index[:3])
-                warnings.append(f"{ticker}：發現單日收盤價變動達 ±{extreme_return:.0%} 的行情（例如 {dates}）；可能是真實波動，也可能涉及拆股／資料異常，建議核對。")
+                warnings.append(f"{ticker}：發現單日收盤價變動達 ±{extreme_return:.0%} 的行情（例如 {dates}）。")
         required_ohlc = {"open", "high", "low", "close"}
         if required_ohlc.issubset(data.columns):
             values = data[list(required_ohlc)].apply(pd.to_numeric, errors="coerce")
-            if values.isna().any().any():
-                warnings.append(f"{ticker}：OHLC 欄位含缺失或非數值資料。")
-            else:
+            if not values.isna().any().any():
                 upper = values[["open", "close"]].max(axis=1)
                 lower = values[["open", "close"]].min(axis=1)
                 if (values["high"] < upper).any() or (values["low"] > lower).any():
-                    warnings.append(f"{ticker}：部分 OHLC 高低價未涵蓋開盤／收盤價，回測可能拒絕此資料。")
+                    warnings.append(f"{ticker}：部分 OHLC 高低價未涵蓋開盤／收盤價。")
         return warnings
 
     @staticmethod
     def _convert_prices_to_target_currency(data, fx_close, target_currency):
-        """換算跨幣別 OHLC：開盤價使用前一個可用匯率，避免把當日 FX 收盤價帶入開盤成交。"""
         if data is None or data.empty or fx_close is None or fx_close.empty:
             return pd.DataFrame(columns=data.columns if data is not None else [])
         rates = pd.to_numeric(fx_close, errors="coerce")
@@ -153,7 +150,6 @@ class DataFetcher:
     @classmethod
     @st.cache_data(show_spinner=False)
     def load_data_and_fx(cls, tickers, start, end, auto_adjust=True, user_curr="新台幣 (TWD)", currency_overrides=None):
-        """回傳 (價格資料字典, 顯示幣別符號, 資料警告)。"""
         fmt_to_orig = {cls.normalize_ticker(t): t.strip().upper() for t in tickers}
         if not fmt_to_orig:
             return {}, ("NT$" if "TWD" in user_curr else "$"), ["沒有可下載的標的代碼。"]
@@ -173,7 +169,7 @@ class DataFetcher:
                 frame = cls._extract_ticker_frame(raw, fmt_t, len(fmt_to_orig) == 1)
                 required = {"Close"}
                 if frame.empty or not required.issubset(frame.columns):
-                    warnings.append(f"{orig_t}：沒有可用的收盤價資料，已略過。請確認代碼及日期範圍。")
+                    warnings.append(f"{orig_t}：沒有可用的收盤價資料，已略過。")
                     continue
                 close = pd.to_numeric(frame["Close"], errors="coerce")
                 open_price = pd.to_numeric(frame["Open"], errors="coerce") if "Open" in frame else close.copy()
@@ -198,24 +194,23 @@ class DataFetcher:
                 override_map = {str(k).strip().upper(): str(v).strip().upper() for k, v in (currency_overrides or {}).items()}
                 quote_currency = cls._quote_currency(orig_t, override_map)
                 if quote_currency == "UNKNOWN":
-                    warnings.append(f"{orig_t}：無法自動辨識報價幣別。請在「自訂代碼幣別對照」中指定 TWD 或 USD。")
+                    warnings.append(f"{orig_t}：無法自動辨識報價幣別。請在選單中指定 TWD 或 USD。")
                 res["quote_currency"] = quote_currency
                 processed_data[orig_t] = res
             except Exception as exc:
-                warnings.append(f"{orig_t}：整理資料時發生錯誤，已略過（{exc}）。")
+                warnings.append(f"{orig_t}：整理資料時發生錯誤（{exc}）。")
 
         target_currency = "TWD" if "TWD" in user_curr else "USD"
         for ticker in list(processed_data):
             quote_currency = processed_data[ticker]["quote_currency"].iloc[0]
             if quote_currency not in {"TWD", "USD"}:
-                warnings.append(f"{ticker}：報價幣別無法可靠辨識或尚未支援；已略過。")
+                warnings.append(f"{ticker}：報價幣別無法可靠辨識；已略過。")
                 del processed_data[ticker]
 
         needed_fx = any(df["quote_currency"].iloc[0] != target_currency for df in processed_data.values())
         fx_close = None
         if needed_fx:
             try:
-                # 擴展至 30 天前置，避免連假抓不到前一筆匯率
                 fx_start = pd.Timestamp(start) - pd.Timedelta(days=30)
                 fx_raw = yf.download("USDTWD=X", start=fx_start, end=end, auto_adjust=True, progress=False)
                 fx_frame = cls._extract_ticker_frame(fx_raw, "USDTWD=X", True)
@@ -227,7 +222,7 @@ class DataFetcher:
                 if fx_close is None or fx_close.empty:
                     warnings.append("無法取得 USD/TWD 歷史匯率；需要換匯的標的將略過。")
             except Exception as exc:
-                warnings.append(f"下載 USD/TWD 匯率失敗：{exc}。需要換匯的標的將略過。")
+                warnings.append(f"下載 USD/TWD 匯率失敗：{exc}。")
 
         for ticker in list(processed_data):
             data = processed_data[ticker]
@@ -245,8 +240,7 @@ class DataFetcher:
                 del processed_data[ticker]
                 continue
             if len(data) < original_rows:
-                warnings.append(f"{ticker}：為避免開盤成交使用未來匯率，已排除缺少前置匯率的 {original_rows - len(data)} 筆資料。")
-            warnings.append(f"{ticker}：跨幣別換算為近似值；開盤價使用前一筆可用匯率，收盤估值與股利使用當日匯率。")
+                warnings.append(f"{ticker}：排除缺少前置匯率的 {original_rows - len(data)} 筆資料。")
             processed_data[ticker] = data
 
         for data in processed_data.values():
@@ -318,7 +312,7 @@ class IndicatorCalculator:
                 buy, sell = float(p["buy_k"]), float(p["sell_k"])
             except (KeyError, TypeError, ValueError):
                 raise ValueError("KD 買入與賣出門檻必須是數值。")
-            if not np.isfinite([buy, sell]).all() or not (0 <= buy < sell <= 100):
+            if not np.isfinite([buy, sell]).all() or not (0 <= buy < sell ≤ 100):
                 raise ValueError("KD 門檻必須符合 0 ≤ buy_k < sell_k ≤ 100。")
         else:
             raise ValueError(f"不支援的策略名稱：{strat_name}")
@@ -370,7 +364,7 @@ class IndicatorCalculator:
 # 3. 核心交易回測引擎模組 (Backtest Engine Module)
 # ==========================================
 class BacktestEngine:
-    """模擬交易過程，逐日計算資產帳本。"""
+    """模擬交易過程，逐日計算資產帳本與交易成本。"""
 
     @staticmethod
     def _validate_capital_inputs(init_capital, monthly_inflow):
@@ -389,7 +383,7 @@ class BacktestEngine:
         except (TypeError, ValueError):
             raise ValueError("手續費、交易稅與滑價必須是數值。")
         if not np.isfinite(values).all() or (values < 0).any() or (values >= 1).any():
-            raise ValueError("手續費、交易稅與滑價必須介於 0（含）與 1（不含）之間。")
+            raise ValueError("手續費、交易稅與滑價必須介於 0（含）與 100%（不含）之間。")
         return tuple(float(v) for v in values)
 
     @staticmethod
@@ -491,7 +485,13 @@ class BacktestEngine:
 
     @staticmethod
     def run_dca_strategy(df, init_capital, monthly_inflow, freq_type, dca_amount,
-                         custom_days, fee, slip):
+                         custom_days, fee, slip, reinvest_idle=True):
+        """定期定額／買入持有策略。
+
+        Parameters:
+            reinvest_idle (bool): 若為 True，扣款日會將帳戶所有可用現金（含股利與積累資金）
+                                 全額滾動投入，消除 Cash Drag；若為 False 則僅扣固定金額。
+        """
         data = df.copy()
         init_capital, monthly_inflow = BacktestEngine._validate_capital_inputs(init_capital, monthly_inflow)
         fee, _, slip = BacktestEngine._validate_cost_inputs(fee, 0.0, slip)
@@ -544,12 +544,13 @@ class BacktestEngine:
                 shares += cash / buy_price
                 cash = 0.0
                 trade_count += 1
-            elif bool(buy_mask.iloc[i]) and cash > 0 and dca_amount > 0:
-                actual_buy = min(cash, float(dca_amount))
-                buy_price = BacktestEngine._buy_fill_price(price, fee, slip)
-                shares += actual_buy / buy_price
-                cash -= actual_buy
-                trade_count += 1
+            elif bool(buy_mask.iloc[i]) and cash > 0:
+                actual_buy = cash if reinvest_idle else min(cash, float(dca_amount))
+                if actual_buy > 0:
+                    buy_price = BacktestEngine._buy_fill_price(price, fee, slip)
+                    shares += actual_buy / buy_price
+                    cash -= actual_buy
+                    trade_count += 1
 
             stock_val = shares * price
             portfolio_vals.append(cash + stock_val)
@@ -701,11 +702,16 @@ class BacktestEngine:
 
     @classmethod
     def run_named_strategy(cls, df, strat_name, params_dict, init_capital, monthly_inflow, fee, tax, slip):
-        """統一的具名策略執行介面（供單元測試與自動化路由使用）。"""
+        """具名策略執行介面。"""
         fee, tax, slip = cls._validate_cost_inputs(fee, tax, slip)
         if strat_name == "定期定額 / 買入持有 (DCA / Buy & Hold)":
             p = params_dict.get("DCA", params_dict)
-            return cls.run_dca_strategy(df, init_capital, monthly_inflow, p.get("freq", "每月 (Monthly)"), p.get("val", 0.0), p.get("custom_days", 20), fee, slip)
+            reinvest_idle = bool(p.get("reinvest_idle", True))
+            return cls.run_dca_strategy(
+                df, init_capital, monthly_inflow, 
+                p.get("freq", "每月 (Monthly)"), p.get("val", 0.0), 
+                p.get("custom_days", 20), fee, slip, reinvest_idle=reinvest_idle
+            )
         elif strat_name == "跌破均線且創新低買入":
             p = params_dict.get("DipDCA", params_dict)
             return cls.run_dip_dca(df, init_capital, monthly_inflow, p, fee, slip)
@@ -720,7 +726,7 @@ class BacktestEngine:
 # 4. 績效評估與統計模組 (Performance Module)
 # ==========================================
 class PerformanceEvaluator:
-    """績效統計、XIRR、夏普值、Holdout 驗證與基準對比。"""
+    """績效統計、XIRR、夏普/索提諾比率、Holdout 驗證與基準對比。"""
 
     @staticmethod
     def _calculate_xirr(cashflows, dates):
@@ -736,7 +742,6 @@ class PerformanceEvaluator:
         if not dates.is_monotonic_increasing:
             return np.nan
 
-        # 同一日期的多筆現金流先做加總清理
         df_cf = pd.DataFrame({"flow": flows, "date": dates}).groupby("date", as_index=False).sum()
         flows = df_cf["flow"].to_numpy(dtype=float)
         dates = pd.DatetimeIndex(df_cf["date"])
@@ -783,6 +788,51 @@ class PerformanceEvaluator:
             else:
                 low, f_low = mid, f_mid
         return (low + high) / 2
+
+    @staticmethod
+    def calculate_risk_metrics(df, risk_free_rate=0.0):
+        """計算每日 TWR 報酬率、年化波動度、夏普比率與索提諾比率。"""
+        if df is None or df.empty or "equity_net" not in df.columns:
+            return {}
+        try:
+            rf = float(risk_free_rate)
+        except (TypeError, ValueError):
+            return {}
+        if not np.isfinite(rf) or rf < 0:
+            return {}
+        equity = pd.to_numeric(df["equity_net"], errors="coerce").to_numpy(dtype=float)
+        if not np.isfinite(equity).all() or (equity <= 0).any():
+            return {}
+
+        daily_returns = np.empty(len(equity), dtype=float)
+        daily_returns[0] = equity[0] - 1.0
+        if len(equity) > 1:
+            daily_returns[1:] = equity[1:] / equity[:-1] - 1.0
+
+        vol = float(np.std(daily_returns, ddof=1) * np.sqrt(252)) if len(daily_returns) > 1 else 0.0
+        mean_ret = float(np.mean(daily_returns))
+
+        if vol == 0.0:
+            sharpe = np.nan
+            sortino = np.nan
+        else:
+            rf_daily = rf / 252.0
+            excess = daily_returns - rf_daily
+            sharpe = float(np.mean(excess) / np.std(daily_returns, ddof=1) * np.sqrt(252))
+
+            downside = daily_returns[daily_returns < rf_daily] - rf_daily
+            if len(downside) > 0 and np.sum(downside**2) > 0:
+                downside_std = float(np.sqrt(np.mean(downside**2)) * np.sqrt(252))
+                sortino = float((mean_ret * 252.0 - rf) / downside_std)
+            else:
+                sortino = np.nan
+
+        return {
+            "daily_twr_returns": daily_returns,
+            "annualized_volatility": vol,
+            "sharpe_ratio": sharpe,
+            "sortino_ratio": sortino
+        }
 
     @staticmethod
     def evaluate_holdout_period(df, train_ratio=0.70):
@@ -887,6 +937,12 @@ class PerformanceEvaluator:
         dates.append(df.index[-1])
         xirr = cls._calculate_xirr(cashflows, dates)
 
+        # 計算風險指標 (Sharpe, Sortino, Volatility)
+        risk_metrics = cls.calculate_risk_metrics(df)
+        sharpe_val = risk_metrics.get("sharpe_ratio", np.nan)
+        sortino_val = risk_metrics.get("sortino_ratio", np.nan)
+        vol_val = risk_metrics.get("annualized_volatility", np.nan)
+
         return {
             "累積投入本金": f"{curr_symbol}{gross_invested:,.0f}",
             "最終資產金額": f"{curr_symbol}{final_value:,.0f}",
@@ -895,6 +951,9 @@ class PerformanceEvaluator:
             "總報酬率 (TWR)": f"{total_return:.2%}",
             "CAGR 年化報酬 (TWR)": f"{cagr:.2%}",
             "XIRR 資金加權年化報酬": f"{xirr:.2%}" if np.isfinite(xirr) else "無法計算",
+            "夏普比率 (Sharpe)": f"{sharpe_val:.2f}" if np.isfinite(sharpe_val) else "-",
+            "索提諾比率 (Sortino)": f"{sortino_val:.2f}" if np.isfinite(sortino_val) else "-",
+            "年化波動度": f"{vol_val:.2%}" if np.isfinite(vol_val) else "-",
             "Max Drawdown (MDD)": f"{mdd:.2%}",
             "累積交易次數": f"{int(df['trades'].iloc[-1]) if isinstance(df['trades'], pd.Series) else int(df['trades'])} 次",
             "_raw_final": final_value,
@@ -905,53 +964,7 @@ class PerformanceEvaluator:
         }
 
     @staticmethod
-    def calculate_risk_metrics(df, risk_free_rate=0.0):
-        """計算每日 TWR 報酬率、年化波動度、夏普比率與索提諾比率。"""
-        if df is None or df.empty or "equity_net" not in df.columns:
-            return {}
-        try:
-            rf = float(risk_free_rate)
-        except (TypeError, ValueError):
-            return {}
-        if not np.isfinite(rf) or rf < 0:
-            return {}
-        equity = pd.to_numeric(df["equity_net"], errors="coerce").to_numpy(dtype=float)
-        if not np.isfinite(equity).all() or (equity <= 0).any():
-            return {}
-
-        daily_returns = np.empty(len(equity), dtype=float)
-        daily_returns[0] = equity[0] - 1.0
-        if len(equity) > 1:
-            daily_returns[1:] = equity[1:] / equity[:-1] - 1.0
-
-        vol = float(np.std(daily_returns, ddof=1) * np.sqrt(252)) if len(daily_returns) > 1 else 0.0
-        mean_ret = float(np.mean(daily_returns))
-
-        if vol == 0.0:
-            sharpe = np.nan
-            sortino = np.nan
-        else:
-            rf_daily = rf / 252.0
-            excess = daily_returns - rf_daily
-            sharpe = float(np.mean(excess) / np.std(daily_returns, ddof=1) * np.sqrt(252))
-
-            downside = daily_returns[daily_returns < rf_daily] - rf_daily
-            if len(downside) > 0 and np.sum(downside**2) > 0:
-                downside_std = float(np.sqrt(np.mean(downside**2)) * np.sqrt(252))
-                sortino = float((mean_ret * 252.0 - rf) / downside_std)
-            else:
-                sortino = np.nan
-
-        return {
-            "daily_twr_returns": daily_returns,
-            "annualized_volatility": vol,
-            "sharpe_ratio": sharpe,
-            "sortino_ratio": sortino
-        }
-
-    @staticmethod
     def compare_to_benchmark(strategy_df, benchmark_df):
-        """計算策略相對於大盤基準的超額報酬 (Excess TWR) 與相對 MDD。"""
         if strategy_df is None or benchmark_df is None or strategy_df.empty or benchmark_df.empty:
             return {}
         if not strategy_df.index.equals(benchmark_df.index):
@@ -983,7 +996,6 @@ class PerformanceEvaluator:
 
     @staticmethod
     def evaluate_rolling_periods(df, num_periods):
-        """將回測區間切分為 N 個子區間，評估各滾動區間之 TWR 與 MDD。"""
         try:
             k = int(num_periods)
         except (TypeError, ValueError):
@@ -1027,7 +1039,7 @@ class PerformanceEvaluator:
 # ==========================================
 # 5. UI 介面與控制主流程 (Streamlit UI Controller)
 # ==========================================
-st.title("📈 多市場與多策略比較回測系統")
+st.title("📈 多市場與多策略比較回測系統 v32.1")
 
 # --- 側邊欄控制區 1：選擇標的與資金 ---
 st.sidebar.header("1. 選擇標的與資產")
@@ -1045,7 +1057,7 @@ selected_presets = st.sidebar.multiselect(
 custom_input_extra = st.sidebar.text_input(
     "額外補充自訂代碼 (逗號隔開)",
     value="",
-    help="如需補充下拉選單沒有的標的，請在此輸入（例如：2330, NVDA, VOO, AMD）。"
+    help="例如：2330, NVDA, VOO, AMD。未列入預設清單的代碼，需在下方指定幣別。"
 )
 currency_override_text = st.sidebar.text_input(
     "自訂代碼幣別對照（選填）",
@@ -1074,8 +1086,7 @@ initial_capital = st.sidebar.number_input("期初投入本金", value=300000 if 
 monthly_inflow = st.sidebar.number_input("每月固定新增可投入資金", value=30000 if "TWD" in user_currency else 1000, step=1000)
 reinvest_dividends = st.sidebar.checkbox(
     "模擬股利入帳（拆股由歷史價格基準反映）",
-    value=True,
-    help="開啟時股利依事件資料計入現金；關閉時不處理股利／拆股事件。"
+    value=True
 )
 
 time_option = st.sidebar.selectbox("回測時間跨度", ["近 3 年", "近 5 年", "近 10 年", "自訂日期範圍"], index=1)
@@ -1090,9 +1101,14 @@ else:
     start_date = st.sidebar.date_input("開始日期", value=pd.to_datetime("2015-01-01"))
     end_date = st.sidebar.date_input("結束日期", value=today)
 
-# --- 側邊欄控制區 2：交易成本 ---
-st.sidebar.header("2. 交易成本設定")
+# --- 側邊欄控制區 2：交易成本與資金再投資 ---
+st.sidebar.header("2. 交易成本與資金管理")
 auto_cost_toggle = st.sidebar.checkbox("依據各資產類別自動設定交易成本", value=True)
+reinvest_idle_toggle = st.sidebar.checkbox(
+    "閒置資金與股利全額再投資 (Reinvestment)", 
+    value=True, 
+    help="開啟時扣款日會將帳戶所有現金（含股利與積累資金）全額投入，消除 Cash Drag；關閉時僅扣固定金額。"
+)
 
 if not auto_cost_toggle:
     fee_input = st.sidebar.number_input("手續費率 (%)", value=0.071, step=0.01, format="%.3f") / 100
@@ -1119,7 +1135,8 @@ if "定期定額 / 買入持有 (DCA / Buy & Hold)" in selected_strategies:
     params["DCA"] = {
         "freq": st.sidebar.selectbox("DCA 扣款頻率", ["每月 (Monthly)", "每週 (Weekly)", "自訂交易日數"]),
         "val": float(st.sidebar.number_input("每期 DCA 扣款金額", value=30000 if "TWD" in user_currency else 1000, step=1000)),
-        "custom_days": 20
+        "custom_days": 20,
+        "reinvest_idle": reinvest_idle_toggle
     }
 
 if "跌破均線且創新低買入" in selected_strategies:
@@ -1146,9 +1163,13 @@ if "MACD 柱狀圖/交叉" in selected_strategies:
 if "KD 隨機指標" in selected_strategies:
     params["KD"] = {"period": 9, "buy_k": 20, "sell_k": 80}
 
-# --- 側邊欄控制區 4：自訂表格顯示欄位 ---
+# --- 側邊欄控制區 4：自訂顯示欄位 ---
 st.sidebar.header("4. 自訂顯示欄位")
-all_metrics_cols = ["累積投入本金", "最終資產金額", "最終持股市值", "最終剩餘現金", "總報酬率 (TWR)", "CAGR 年化報酬 (TWR)", "XIRR 資金加權年化報酬", "Max Drawdown (MDD)", "累積交易次數"]
+all_metrics_cols = [
+    "累積投入本金", "最終資產金額", "最終持股市值", "最終剩餘現金", 
+    "總報酬率 (TWR)", "CAGR 年化報酬 (TWR)", "XIRR 資金加權年化報酬", 
+    "夏普比率 (Sharpe)", "索提諾比率 (Sortino)", "年化波動度", "Max Drawdown (MDD)", "累積交易次數"
+]
 selected_cols = st.sidebar.multiselect("表格數據欄位", all_metrics_cols, default=all_metrics_cols)
 
 # --- 主程式執行按鈕與畫面渲染 ---
@@ -1221,13 +1242,21 @@ if st.sidebar.button("開始多策略與多資產回測"):
                         fig.add_trace(go.Scatter(x=res.index, y=res['equity_net'] * 100.0, name=f"{curve_label} ({m['_raw_return']:.2%} TWR)"))
 
                 st.subheader("📊 績效與金額對比總表")
-                st.caption("每個標的與策略都是各自獨立回測，均使用完整的期初本金與每月入金；這不是多標的共同資金的組合回測。")
                 results_df = pd.DataFrame(matrix_results)
                 if results_df.empty:
                     st.error("沒有任何策略通過績效驗證，請檢查資料、價格及帳務警告。")
                 else:
                     display_cols = ["標的", "策略"] + [c for c in selected_cols if c in results_df.columns]
                     st.dataframe(results_df[display_cols].set_index(["標的", "策略"]), use_container_width=True)
+
+                    # 數據 CSV 匯出
+                    csv_data = results_df[display_cols].to_csv(index=False, encoding="utf-8-sig")
+                    st.download_button(
+                        label="📥 下載績效對比總表 (CSV)",
+                        data=csv_data,
+                        file_name="backtest_performance_summary.csv",
+                        mime="text/csv"
+                    )
 
                 if show_holdout_analysis:
                     st.subheader("🧪 後段驗證區間（固定參數診斷）")
