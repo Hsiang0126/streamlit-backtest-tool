@@ -28,7 +28,6 @@ st.sidebar.title("🎛️ 控制中心")
 
 st.sidebar.markdown("### 1. 選擇標的資產")
 
-# 經典資產配置主題包快捷選擇
 PORTFOLIO_PRESETS = {
     "自選標的組合": [],
     "全天候防禦組合 (All Weather)": ["SPY", "TLT", "IEF", "GLD", "DBC"],
@@ -148,6 +147,7 @@ tab_pk, tab_rebalance = st.tabs([
 with tab_pk:
     render_strategy_pk_tab(
         individual_dict=individual_dict,
+        curr_symbol=curr_symbol,
         effective_start_date=effective_start,
         initial_capital=initial_capital,
         monthly_inflow=monthly_inflow,
