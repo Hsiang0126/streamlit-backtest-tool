@@ -46,7 +46,9 @@ custom_input = st.sidebar.text_input(
 )
 
 preset_tickers = [p.split(" ")[0].strip().upper() for p in selected_presets]
-custom_tickers = [s.strip().upper() for s in custom_input.split(",") if s.strip()]
+# 🛡️ 修復：自動清洗中文逗號、頓號與全形/半形空格
+clean_custom = custom_input.replace("，", ",").replace("、", ",").replace(" ", ",")
+custom_tickers = [s.strip().upper() for s in clean_custom.split(",") if s.strip()]
 target_symbols = list(dict.fromkeys(preset_tickers + custom_tickers))
 
 # --- 2. 帳戶資金設定 ---
