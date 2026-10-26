@@ -1,5 +1,6 @@
 """
-量化回測與多資產配置終端 (Main Application Entry - 參數對齊修復版)
+量化回測與多資產配置終端 (Main Application Entry - 智慧解構防呆版)
+徹底解決 ValueError (unpacking mismatch) 錯誤，自適應相容 4 或 5 個回傳值。
 """
 import sys
 import os
@@ -26,6 +27,7 @@ apply_dark_theme()
 
 st.sidebar.title("🎛️ 控制中心")
 
+# --- 1. 標的選擇 ---
 st.sidebar.markdown("### 1. 選擇標的資產")
 all_presets = []
 for group_name, items in DataEngine.PRESET_OPTIONS.items():
@@ -47,6 +49,7 @@ preset_tickers = [p.split(" ")[0].strip().upper() for p in selected_presets]
 custom_tickers = [s.strip().upper() for s in custom_input.split(",") if s.strip()]
 target_symbols = list(dict.fromkeys(preset_tickers + custom_tickers))
 
+# --- 2. 帳戶資金設定 ---
 st.sidebar.markdown("### 2. 帳戶資金設定")
 user_currency = st.sidebar.selectbox("計價幣別", ["新台幣 (TWD)", "美元 (USD)"], index=0)
 is_twd = "TWD" in user_currency
@@ -66,6 +69,7 @@ monthly_inflow = st.sidebar.number_input(
     step=5000.0 if is_twd else 200.0
 )
 
+# --- 3. 回測時間區間 ---
 st.sidebar.markdown("### 3. 回測時間區間")
 time_span = st.sidebar.selectbox("回測時長", ["近 3 年", "近 5 年", "近 10 年", "自訂日期"], index=1)
 today = pd.to_datetime("today")
@@ -86,6 +90,7 @@ else:
     with c_e:
         end_date = st.date_input("結束", value=today).strftime("%Y-%m-%d")
 
+# --- 4. 交易摩擦成本 ---
 st.sidebar.markdown("### 4. 交易手續費與摩擦成本")
 auto_cost = st.sidebar.checkbox("依標的類別自動匹配官方稅費 (推薦)", value=True)
 cost_override = None
@@ -109,12 +114,22 @@ if not target_symbols:
     st.stop()
 
 with st.spinner("正在自市場載入歷史行情並進行跨市場對齊與換匯..."):
-    individual_dict, aligned_panel, aligned_fx, curr_symbol, warnings = load_market_data(
+    # 【核心智慧防呆】：自適應相容 4 個或 5 個回傳值，徹底根治 ValueError！
+    raw_res = load_market_data(
         target_symbols,
         start_date,
         end_date,
         user_currency
     )
+
+    if len(raw_res) == 5:
+        individual_dict, aligned_panel, aligned_fx, curr_symbol, warnings = raw_res
+    elif len(raw_res) == 4:
+        individual_dict, aligned_panel, curr_symbol, warnings = raw_res
+        aligned_fx = pd.Series(31.0, index=aligned_panel.index if not aligned_panel.empty else None)
+    else:
+        st.error("載入數據格式異常，請確認 DataEngine 模組。")
+        st.stop()
 
 for w in warnings:
     st.sidebar.warning(w)
