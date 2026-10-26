@@ -1,6 +1,6 @@
 """
-高級圖表渲染模組 (Chart Components Module)
-專門渲染 TradingView 質感 K 線買賣箭頭標記圖與 2D 參數高原熱力圖。
+高級圖表渲染模組 (Chart Components Module - 色階強化版)
+專門渲染 TradingView 質感 K 線買賣箭頭標記圖與 2D 參數高原熱力圖 (zmid=0 鮮明對比)。
 """
 from typing import Optional
 import streamlit as st
@@ -86,16 +86,27 @@ def render_parameter_heatmap(
     heatmap_df: pd.DataFrame,
     curr_symbol: str = "NT$"
 ):
+    """繪製快慢線 2D 尋優熱力圖，zmid=0 確保正負分明，高原清晰可辨。"""
+    vals = heatmap_df.values.flatten()
+    valid_vals = vals[~np.isnan(vals)]
+    max_val = float(np.max(valid_vals)) if len(valid_vals) > 0 else 10.0
+    min_val = float(np.min(valid_vals)) if len(valid_vals) > 0 else -10.0
+
     fig = go.Figure(data=go.Heatmap(
         z=heatmap_df.values,
         x=heatmap_df.columns,
         y=heatmap_df.index,
+        zmid=0.0,
+        zmin=min(min_val, -5.0),
+        zmax=max(max_val, 15.0),
         colorscale=[
-            [0.0, "#f85149"],
-            [0.5, "#30363d"],
-            [1.0, "#3fb950"]
+            [0.0, "#d73a49"],   # 負報酬警戒深紅
+            [0.4, "#f85149"],   # 虧損淺紅
+            [0.5, "#21262d"],   # 平手深灰黑 (0%)
+            [0.6, "#2ea44f"],   # 正報酬淺綠
+            [1.0, "#3fb950"]    # 獲利翡翠綠高原
         ],
-        colorbar=dict(title="報酬率 (%)"),
+        colorbar=dict(title="總報酬率 (%)"),
         hovertemplate="快線週期: %{x}<br>慢線週期: %{y}<br>總報酬率: %{z:.2f}%<extra></extra>"
     ))
 
