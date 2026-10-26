@@ -127,10 +127,8 @@ def render_efficient_frontier(
     frontier_df: pd.DataFrame,
     summary_stats: Dict[str, Any]
 ):
-    """繪製馬科維茨效率前緣彩虹散佈圖。"""
     fig = go.Figure()
 
-    # 1. 蒙地卡羅隨機投資組合雲圖
     fig.add_trace(go.Scatter(
         x=frontier_df["volatility"],
         y=frontier_df["return"],
@@ -146,7 +144,6 @@ def render_efficient_frontier(
         hovertemplate="年化波動度: %{x:.2f}%<br>年化預期報酬: %{y:.2f}%<br>夏普比率: %{marker.color:.2f}<extra></extra>"
     ))
 
-    # 2. 標註最高夏普點 (金色星星)
     ms = summary_stats.get("max_sharpe", {})
     if ms:
         fig.add_trace(go.Scatter(
@@ -160,7 +157,6 @@ def render_efficient_frontier(
             textfont=dict(color="#f1e05a", size=12, family="sans-serif")
         ))
 
-    # 3. 標註最小波動點 (藍色圓點)
     mv = summary_stats.get("min_vol", {})
     if mv:
         fig.add_trace(go.Scatter(
