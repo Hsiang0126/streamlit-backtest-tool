@@ -5,6 +5,7 @@
 2. 撮合成交嚴格使用真實開盤價 (open)，杜絕誤用除息還原價導致股數虛增。
 3. 每日精準追蹤 trade_count 序列，完美支援 DCA/Dip DCA 逐筆購買歷史。
 4. 門檻偏差再平衡 (Tolerance Band Rebalancing)，自動略過微小調倉並統計節省摩擦手續費。
+5. 跨市場休市調倉之 Partial Fill 掛單追蹤，徹底杜絕資金閒置死鎖。
 """
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
@@ -148,6 +149,7 @@ class BacktestEngine:
         res["external_flow"] = external_flows
         res["total_invested"] = float(initial_capital) + pd.Series(external_flows, index=data.index).cumsum()
         res["trades"] = trades_hist
+        res["to_target_fx"] = [float(aligned_fx.iloc[k]) if need_fx else 1.0 for k in range(len(data))]
         res["equity_net"] = BacktestEngine._calc_twr_curve(portfolio_vals, external_flows, initial_capital)
         return res
 
@@ -228,6 +230,7 @@ class BacktestEngine:
         res["external_flow"] = external_flows
         res["total_invested"] = float(initial_capital) + pd.Series(external_flows, index=data.index).cumsum()
         res["trades"] = trades_hist
+        res["to_target_fx"] = [float(aligned_fx.iloc[k]) if need_fx else 1.0 for k in range(len(data))]
         res["equity_net"] = BacktestEngine._calc_twr_curve(portfolio_vals, external_flows, initial_capital)
         return res
 
@@ -314,6 +317,7 @@ class BacktestEngine:
         res["external_flow"] = external_flows
         res["total_invested"] = float(initial_capital) + pd.Series(external_flows, index=data.index).cumsum()
         res["trades"] = trades_hist
+        res["to_target_fx"] = [float(aligned_fx.iloc[k]) if need_fx else 1.0 for k in range(len(data))]
         res["equity_net"] = BacktestEngine._calc_twr_curve(portfolio_vals, external_flows, initial_capital)
         return res
 
@@ -465,7 +469,13 @@ class BacktestEngine:
                         cash -= actual_buy_target
                         asset_cum_bought[t] += actual_buy_target
                         trade_count += 1
-                        del pending_rebalance_orders[t]
+                        
+                        # 🛡️ 修復 Partial Fill：未買滿差額繼續保留，杜絕休市調倉死鎖
+                        rem_diff = diff - actual_buy_target
+                        if rem_diff <= 50.0:
+                            del pending_rebalance_orders[t]
+                        else:
+                            pending_rebalance_orders[t] = rem_diff
 
             elif flow > 0 and cash > 10.0:
                 deploy_pool = cash
