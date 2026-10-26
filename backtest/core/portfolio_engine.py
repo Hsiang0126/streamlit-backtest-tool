@@ -192,11 +192,13 @@ class BacktestEngine:
         cost: AssetCostStructure,
         month_changed: pd.Series
     ) -> pd.DataFrame:
+        from core.indicators import IndicatorEngine
         sma_p = int(params.get("sma_period", 60))
         buy_amt = float(params.get("buy_amount", 50000.0))
         min_int = max(1, int(params.get("min_interval", 3)))
+        tf = params.get("timeframe", "日線 (Daily)")
 
-        sma = data["close"].rolling(sma_p).mean()
+        sma = IndicatorEngine.calculate_ma(data, sma_p, tf)
 
         cash = float(initial_capital)
         shares = 0.0
@@ -339,7 +341,6 @@ class BacktestEngine:
                 target_vals = {t: pre_rebal_val * norm_weights[t] for t in tickers}
                 curr_vals = {t: shares[t] * open_prices[t] for t in tickers}
 
-                # 賣出超配
                 for t in tickers:
                     diff = curr_vals[t] - target_vals[t]
                     if diff > 50.0:
@@ -353,7 +354,6 @@ class BacktestEngine:
                         asset_cum_sold[t] += cash_recv
                         trade_count += 1
 
-                # 買入低配
                 for t in tickers:
                     diff = target_vals[t] - curr_vals[t]
                     if diff > 50.0 and cash > 10.0:
@@ -405,7 +405,6 @@ class BacktestEngine:
             initial_capital
         )
 
-        # 5. 計算各資產利潤歸因 (Profit Attribution)
         attribution: Dict[str, Dict[str, float]] = {}
         for t in tickers:
             final_holding_val = shares[t] * close_prices[t]
