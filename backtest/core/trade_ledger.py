@@ -37,17 +37,21 @@ class TradeLedger:
             cash_rem = float(row["cash"])
             invested_now = float(row["total_invested"])
             port_val = float(row["portfolio_value"])
+            fx = float(row["to_target_fx"]) if "to_target_fx" in row else 1.0
 
-            curr_shares = stock_val / close_p if close_p > 0 else 0.0
+            curr_shares = stock_val / (close_p * fx) if (close_p * fx) > 0 else 0.0
             bought_shares = max(0.0, curr_shares - prev_shares)
 
             if stock_val <= 0 and invested_now <= 0:
                 continue
 
+            open_p_target = open_p * fx
+            p_display = f"{curr_symbol} {open_p_target:,.2f}" if abs(fx - 1.0) < 1e-4 else f"{curr_symbol} {open_p_target:,.2f} (${open_p:,.2f})"
+
             records.append({
                 "購買序號": f"第 {len(records) + 1} 次",
                 "購買日期": pd.Timestamp(dt).strftime("%Y-%m-%d"),
-                "買入價格": f"{curr_symbol} {open_p:,.2f}",
+                "買入價格": p_display,
                 "當期持股市值": f"{curr_symbol} {stock_val:,.0f}",
                 "當期剩餘現金": f"{curr_symbol} {cash_rem:,.0f}",
                 "累計投入本金": f"{curr_symbol} {invested_now:,.0f}",
