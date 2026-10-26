@@ -1,6 +1,4 @@
-"""
-定期定額與資金管理策略 (DCA & Dip Buyer)
-"""
+"""定期定額與資金管理策略。"""
 from typing import List, Dict, Any
 from strategies.base import BaseStrategy, ParamSpec
 from strategies.registry import register_strategy
@@ -10,7 +8,7 @@ from strategies.registry import register_strategy
 class DCAStrategy(BaseStrategy):
     strategy_id = "dca_buy_and_hold"
     display_name = "定期定額 / 買入持有 (DCA / Buy & Hold)"
-    description = "經典紀律定投策略：期初全額買入，每月固定注入資金全額自動扣款再投資。"
+    description = "經典定投策略：期初全額買入，每期固定注入資金自動扣款再投資。"
     is_timing = False
 
     @classmethod
@@ -22,13 +20,6 @@ class DCAStrategy(BaseStrategy):
                 param_type="select",
                 default="每月 (Monthly)",
                 options=["每月 (Monthly)", "每週 (Weekly)", "每 10 交易日"]
-            ),
-            ParamSpec(
-                key="reinvest_idle",
-                label="閒置資金與股利全額再投資",
-                param_type="bool",
-                default=True,
-                help_text="開啟時扣款日會將現金池全部投入以消除 Cash Drag；關閉時僅扣每期固定金額。"
             )
         ]
 
@@ -37,22 +28,15 @@ class DCAStrategy(BaseStrategy):
 class DipBuyerStrategy(BaseStrategy):
     strategy_id = "dip_buyer"
     display_name = "跌破均線且創新低買入 (Dip DCA)"
-    description = "價值低吸策略：當價格低於指定均線且跌破區間新低時，逢低分批加碼買入。支援週線基準。"
+    description = "逢低分批加碼策略：價格跌破指定均線且出現區間新低時加碼。"
     is_timing = False
 
     @classmethod
     def get_param_specs(cls) -> List[ParamSpec]:
         return [
             ParamSpec(
-                key="timeframe",
-                label="均線基準週期",
-                param_type="select",
-                default="日線 (Daily)",
-                options=["日線 (Daily)", "週線 (Weekly)"]
-            ),
-            ParamSpec(
                 key="sma_period",
-                label="基準均線週期 (日/週)",
+                label="基準均線週期 (日)",
                 param_type="int",
                 default=60,
                 min_value=5,
