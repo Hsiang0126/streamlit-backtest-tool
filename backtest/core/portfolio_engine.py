@@ -1,11 +1,12 @@
 """
-核心回測引擎 (Portfolio & Strategy Engine - 機構級重構版)
-徹底修復 5 大地雷：
-1. 雙軌計價：標的保持原生報價，僅在交易換匯與總淨值統計時換算，杜絕匯率扭曲偽 K 棒。
-2. 開市日判定與休市順延：休市日絕不幽靈成交，買賣訂單自動順延至該標的下一個真實開盤日。
-3. 靜默暖機期裁切：策略在含暖機期的全量數據上計算指標，帳本與統計嚴格從 start_date 開始。
-4. 全報酬還原價格撮合：除權息與拆股真實反映，杜絕假停損。
-5. 功能 D 升級：門檻偏差再平衡 (Tolerance Band Rebalancing)，自動略過微小調倉並統計節省摩擦手續費。
+核心回測引擎 (Portfolio & Strategy Engine - 換月索引修復版)
+徹底修復：
+1. 換月與換週索引嚴格對齊 (修正 DCA 3 年扣款 726 次為精準 37 次)。
+2. 雙軌計價：標的保持原生報價，僅在交易換匯與總淨值統計時換算，杜絕匯率扭曲偽 K 棒。
+3. 開市日判定與休市順延：休市日絕不幽靈成交，買賣訂單自動順延至該標的下一個真實開盤日。
+4. 靜默暖機期裁切：策略在含暖機期的全量數據上計算指標，帳本與統計嚴格從 start_date 開始。
+5. 全報酬還原價格撮合：除權息與拆股真實反映，杜絕假停損。
+6. 門檻偏差再平衡 (Tolerance Band Rebalancing)，自動略過微小調倉並統計節省摩擦手續費。
 """
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
@@ -62,8 +63,9 @@ class BacktestEngine:
         else:
             aligned_fx = pd.Series(1.0, index=data.index)
 
-        month_period = data.index.to_period("M")
-        month_changed = pd.Series(month_period != pd.Series(month_period).shift(1), index=data.index)
+        # 【核心修正】：嚴格以 DatetimeIndex 建立換月布林 Series，徹底根除天天扣款的 Bug
+        s_months = pd.Series(data.index.to_period("M"), index=data.index)
+        month_changed = s_months != s_months.shift(1)
 
         if strat_cls.is_timing:
             return cls._execute_timing_loop(data, pos_series, initial_capital, monthly_inflow, cost_struct, month_changed, aligned_fx, need_fx, target_curr_code)
@@ -160,10 +162,11 @@ class BacktestEngine:
     ) -> pd.DataFrame:
         freq = params.get("freq", "每月 (Monthly)")
 
+        # 【核心修正】：每週與換月判定均嚴格對齊 index
         if freq == "每週 (Weekly)":
             iso = data.index.isocalendar()
-            week_key = iso["year"].astype(str) + "-" + iso["week"].astype(str)
-            buy_mask = week_key.ne(pd.Series(week_key).shift(1))
+            s_weeks = pd.Series(iso["year"].astype(str) + "-" + iso["week"].astype(str), index=data.index)
+            buy_mask = s_weeks != s_weeks.shift(1)
         elif freq == "每 10 交易日":
             buy_mask = pd.Series(np.arange(len(data)) % 10 == 0, index=data.index)
         else:
@@ -334,21 +337,24 @@ class BacktestEngine:
             cost_dict = {t: CostModel.get_default_costs(t) for t in tickers}
 
         data_idx = aligned_panel.index
-        month_period = data_idx.to_period("M")
-        month_changed = pd.Series(month_period != pd.Series(month_period).shift(1), index=data_idx)
+
+        # 【核心修正】：以 DatetimeIndex 嚴格對齊換月、換季、換半年、換年判定
+        s_months = pd.Series(data_idx.to_period("M"), index=data_idx)
+        month_changed = s_months != s_months.shift(1)
 
         rebalance_mask = pd.Series(False, index=data_idx)
         if rebalance_freq == "每月再平衡 (Monthly)":
             rebalance_mask = month_changed.copy()
         elif rebalance_freq == "每季再平衡 (Quarterly)":
-            quarter_period = data_idx.to_period("Q")
-            rebalance_mask = pd.Series(quarter_period != pd.Series(quarter_period).shift(1), index=data_idx)
+            s_quarters = pd.Series(data_idx.to_period("Q"), index=data_idx)
+            rebalance_mask = s_quarters != s_quarters.shift(1)
         elif rebalance_freq == "每半年再平衡 (Semi-Annually)":
-            half_year = data_idx.year.astype(str) + "-" + np.where(data_idx.month <= 6, "H1", "H2")
-            rebalance_mask = pd.Series(half_year != pd.Series(half_year).shift(1), index=data_idx)
+            half_arr = data_idx.year.astype(str) + "-" + np.where(data_idx.month <= 6, "H1", "H2")
+            s_half = pd.Series(half_arr, index=data_idx)
+            rebalance_mask = s_half != s_half.shift(1)
         elif rebalance_freq == "每年再平衡 (Annually)":
-            year_period = data_idx.to_period("Y")
-            rebalance_mask = pd.Series(year_period != pd.Series(year_period).shift(1), index=data_idx)
+            s_years = pd.Series(data_idx.to_period("Y"), index=data_idx)
+            rebalance_mask = s_years != s_years.shift(1)
 
         cash = float(initial_capital)
         shares = {t: 0.0 for t in tickers}
