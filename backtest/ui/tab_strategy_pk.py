@@ -1,4 +1,7 @@
-"""分頁 1：單標的 × 多策略 PK 模式 (落實原生幣別標記與暖機期傳遞)。"""
+"""
+分頁 1：單標的 × 多策略 PK 模式
+已加入自適應簽名防呆，同時向下相容 curr_symbol 與 effective_start_date。
+"""
 from typing import Dict, Any, Optional
 import streamlit as st
 import pandas as pd
@@ -13,24 +16,36 @@ from ui.theme import render_metric_card
 
 def render_strategy_pk_tab(
     individual_dict: Dict[str, pd.DataFrame],
-    effective_start_date: str,
-    initial_capital: float,
-    monthly_inflow: float,
-    cost_override: Optional[AssetCostStructure] = None
+    curr_symbol: Optional[str] = None,
+    effective_start_date: Optional[str] = None,
+    initial_capital: float = 300000.0,
+    monthly_inflow: float = 30000.0,
+    cost_override: Optional[AssetCostStructure] = None,
+    **kwargs
 ):
+    """
+    單標的多策略 PK 視圖 (具備 **kwargs 防呆，徹底杜絕 TypeError)。
+    """
+    # 自適應參數兼容處理
+    if effective_start_date is None:
+        effective_start_date = kwargs.get("effective_start_date", kwargs.get("s_date", None))
+    
     st.header("⚔️ 單標的 × 多策略獲利 PK 模式")
-    st.caption(f"以標的原生價格與暖機指標同場較勁，真實回測起點：{effective_start_date}。")
+    if effective_start_date:
+        st.caption(f"以標的原生價格與指標同場較勁，實際回測起點：{effective_start_date}。")
+    else:
+        st.caption("評估同一檔資產在不同交易策略下的獲利金額與防禦能力，迅速找出最強量化策略。")
 
     if not individual_dict:
-        st.info("👈 請於側邊欄選取交易標的。")
+        st.info("👈 請於左側側邊欄選擇至少一個交易標的。")
         return
 
     target_ticker = st.selectbox("選擇要進行多策略 PK 的標的：", list(individual_dict.keys()))
     df_target = individual_dict[target_ticker]
 
-    # 原生幣別標註
-    native_curr = df_target.attrs.get("quote_currency", "USD")
-    curr_symbol = "NT$" if native_curr == "TWD" else "$"
+    # 原生幣別標註 (若未傳入 curr_symbol，自動從 DataFrame 屬性辨識)
+    native_curr = getattr(df_target, "attrs", {}).get("quote_currency", "USD")
+    display_curr_symbol = curr_symbol if curr_symbol else ("NT$" if native_curr == "TWD" else "$")
 
     all_strategies = StrategyRegistry.list_names()
     default_strats = [
@@ -111,7 +126,7 @@ def render_strategy_pk_tab(
                 cost_struct=cost_struct,
                 eval_start_date=effective_start_date
             )
-            m = PerformanceMetrics.evaluate(res_df, curr_symbol=curr_symbol, initial_capital=initial_capital)
+            m = PerformanceMetrics.evaluate(res_df, curr_symbol=display_curr_symbol, initial_capital=initial_capital)
             m["策略名稱"] = strat_name
             results_summary.append(m)
             equity_curves[strat_name] = res_df
@@ -130,12 +145,12 @@ def render_strategy_pk_tab(
     champion_final = df_results.iloc[0]["_raw_final"]
     champion_mdd = df_results.iloc[0]["_raw_mdd"]
 
-    st.subheader(f"🏆 獲利冠軍：【{champion_name}】 (原生計價：{curr_symbol})")
+    st.subheader(f"🏆 獲利冠軍：【{champion_name}】 (原生計價：{display_curr_symbol})")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        render_metric_card("冠軍實賺獲利金額", f"{curr_symbol} {champion_profit:+,.0f}", "實收淨利潤", "positive" if champion_profit >= 0 else "negative")
+        render_metric_card("冠軍實賺獲利金額", f"{display_curr_symbol} {champion_profit:+,.0f}", "實收淨利潤", "positive" if champion_profit >= 0 else "negative")
     with c2:
-        render_metric_card("冠軍最終總資產", f"{curr_symbol} {champion_final:,.0f}", "帳戶期末總值", "neutral")
+        render_metric_card("冠軍最終總資產", f"{display_curr_symbol} {champion_final:,.0f}", "帳戶期末總值", "neutral")
     with c3:
         render_metric_card("冠軍總報酬率", f"{df_results.iloc[0]['_raw_roi']:+.2%}", "基於累積自付本金", "positive" if champion_profit >= 0 else "negative")
     with c4:
@@ -162,7 +177,7 @@ def render_strategy_pk_tab(
                 y=curve["portfolio_value"],
                 name=f"{'👑 ' if is_champ else ''}{strat_name}",
                 line=dict(width=3 if is_champ else 1.5),
-                hovertemplate="日期: %{x|%Y-%m-%d}<br>總資產: " + curr_symbol + " %{y:,.0f}<extra></extra>"
+                hovertemplate="日期: %{x|%Y-%m-%d}<br>總資產: " + display_curr_symbol + " %{y:,.0f}<extra></extra>"
             ))
 
     first_curve = list(equity_curves.values())[0]
@@ -171,7 +186,7 @@ def render_strategy_pk_tab(
         y=first_curve["total_invested"],
         name="累計自付本金",
         line=dict(color="#8b949e", dash="dot", width=1.5),
-        hovertemplate="日期: %{x|%Y-%m-%d}<br>投入本金: " + curr_symbol + " %{y:,.0f}<extra></extra>"
+        hovertemplate="日期: %{x|%Y-%m-%d}<br>投入本金: " + display_curr_symbol + " %{y:,.0f}<extra></extra>"
     ))
 
     fig.update_layout(
@@ -181,7 +196,7 @@ def render_strategy_pk_tab(
         hovermode="x unified",
         margin=dict(l=20, r=20, t=30, b=20),
         xaxis=dict(showgrid=True, gridcolor="#21262d"),
-        yaxis=dict(showgrid=True, gridcolor="#21262d", title=f"帳戶總資產價值 ({curr_symbol})"),
+        yaxis=dict(showgrid=True, gridcolor="#21262d", title=f"帳戶總資產價值 ({display_curr_symbol})"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     st.plotly_chart(fig, use_container_width=True)
