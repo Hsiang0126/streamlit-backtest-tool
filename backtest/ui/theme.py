@@ -1,12 +1,8 @@
-"""
-深色金融終端 UI 主題樣式 (Dark Terminal Theme)
-提供專業、高對比、沉浸式的量化終端視覺體驗。
-"""
+"""深色金融終端 UI 主題樣式 (Dark Terminal Theme)。"""
 import streamlit as st
 
 
 def apply_dark_theme():
-    """注入現代化深色金融終端風格 CSS。"""
     dark_css = """
     <style>
     .stApp {
