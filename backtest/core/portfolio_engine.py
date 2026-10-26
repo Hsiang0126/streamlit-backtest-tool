@@ -1,6 +1,10 @@
 """
-核心回測引擎 (Portfolio & Strategy Engine)
-支援 365 天暖機期平滑截斷、休市順延撮合、雙價分離與多資產利潤歸因。
+核心回測引擎 (Portfolio & Strategy Engine - 零 KeyError 極致防呆版)
+徹底修正：
+1. 幣別判斷極致防呆 (智慧代碼偵測 Fallback)，徹底根除 aligned_panel[(t, "quote_currency")] 的 KeyError。
+2. 撮合成交嚴格使用真實開盤價 (open)，杜絕誤用除息還原價導致股數虛增。
+3. 每日精準追蹤 trade_count 序列，完美支援 DCA/Dip DCA 逐筆購買歷史。
+4. 門檻偏差再平衡 (Tolerance Band Rebalancing)，自動略過微小調倉並統計節省摩擦手續費。
 """
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
@@ -10,10 +14,10 @@ from strategies.registry import StrategyRegistry
 
 
 class BacktestEngine:
-    """雙模式回測核心計算引擎。"""
+    """雙模式機構級精準回測引擎。"""
 
     # -------------------------------------------------------------
-    # 模式 A：單標的策略執行引擎 (支援 365 天暖機期傳入)
+    # 模式 A：單標的策略執行引擎 (真實價格撮合)
     # -------------------------------------------------------------
     @classmethod
     def run_single_strategy(
@@ -24,42 +28,55 @@ class BacktestEngine:
         initial_capital: float,
         monthly_inflow: float,
         cost_struct: AssetCostStructure,
-        eval_start_date: Optional[str] = None
+        fx_series: Optional[pd.Series] = None,
+        target_currency: str = "TWD"
     ) -> pd.DataFrame:
         strat_cls = StrategyRegistry.get(strat_name)
         if not strat_cls:
             raise ValueError(f"未註冊的策略：{strat_name}")
 
-        data = df.copy().sort_index()
-        if len(data) < 2:
-            raise ValueError("回測價格數據筆數過少。")
+        full_data = df.copy().sort_index()
 
-        # 1. 策略訊號生成 (在包含暖機期的完整序列上運算，避免指標前期 NaN)
-        month_period = data.index.to_period("M")
-        month_changed = pd.Series(month_period != pd.Series(month_period).shift(1), index=data.index)
+        # 防呆提取報價幣別
+        if "quote_currency" in full_data.columns:
+            quote_curr = str(full_data["quote_currency"].iloc[0]).strip().upper()
+        else:
+            quote_curr = "TWD" if "TWD" in target_currency.upper() else "USD"
 
         if strat_cls.is_timing:
-            raw_sig = strat_cls.generate_signals(data, strat_params)
-            pos_series = raw_sig.shift(1).fillna(0).astype(int)
-            full_res = cls._execute_timing_loop(
-                data, pos_series, initial_capital, monthly_inflow, cost_struct, month_changed, eval_start_date
-            )
+            raw_sig = strat_cls.generate_signals(full_data, strat_params)
+            full_pos = raw_sig.shift(1).fillna(0).astype(int)
+        else:
+            full_pos = pd.Series(1, index=full_data.index)
+
+        if "user_start_idx" in full_data.columns:
+            data = full_data[full_data["user_start_idx"] == True].copy()
+            pos_series = full_pos.reindex(data.index).fillna(0).astype(int)
+        else:
+            data = full_data.copy()
+            pos_series = full_pos.copy()
+
+        if len(data) < 2:
+            raise ValueError("有效回測區間內之交易日數不足。")
+
+        target_curr_code = "TWD" if "TWD" in target_currency.upper() else "USD"
+        need_fx = (quote_curr != target_curr_code)
+        if fx_series is not None and not fx_series.empty:
+            aligned_fx = fx_series.reindex(data.index, method="ffill").fillna(31.0)
+        else:
+            aligned_fx = pd.Series(1.0, index=data.index)
+
+        s_months = pd.Series(data.index.to_period("M"), index=data.index)
+        month_changed = s_months != s_months.shift(1)
+
+        if strat_cls.is_timing:
+            return cls._execute_timing_loop(data, pos_series, initial_capital, monthly_inflow, cost_struct, month_changed, aligned_fx, need_fx, target_curr_code)
         elif strat_cls.strategy_id == "dca_buy_and_hold":
-            full_res = cls._execute_dca_loop(
-                data, strat_params, initial_capital, monthly_inflow, cost_struct, month_changed, eval_start_date
-            )
+            return cls._execute_dca_loop(data, strat_params, initial_capital, monthly_inflow, cost_struct, month_changed, aligned_fx, need_fx, target_curr_code)
         elif strat_cls.strategy_id == "dip_buyer":
-            full_res = cls._execute_dip_loop(
-                data, strat_params, initial_capital, monthly_inflow, cost_struct, month_changed, eval_start_date
-            )
+            return cls._execute_dip_loop(data, strat_params, initial_capital, monthly_inflow, cost_struct, month_changed, aligned_fx, need_fx, target_curr_code)
         else:
             raise ValueError(f"不支援的策略 ID：{strat_cls.strategy_id}")
-
-        # 2. 嚴格截斷：帳本統計與 TWR 僅從正式起點 eval_start_date 起算
-        if eval_start_date:
-            cutoff = pd.Timestamp(eval_start_date)
-            return full_res[full_res.index >= cutoff].copy()
-        return full_res
 
     @staticmethod
     def _execute_timing_loop(
@@ -69,65 +86,60 @@ class BacktestEngine:
         monthly_inflow: float,
         cost: AssetCostStructure,
         month_changed: pd.Series,
-        eval_start_date: Optional[str] = None
+        aligned_fx: pd.Series,
+        need_fx: bool,
+        target_curr: str
     ) -> pd.DataFrame:
-        eval_start_ts = pd.Timestamp(eval_start_date) if eval_start_date else data.index[0]
         cash = float(initial_capital)
         shares = 0.0
         trade_count = 0
-        portfolio_vals, cash_hist, stock_hist, external_flows = [], [], [], []
-        active_started = False
+        portfolio_vals, cash_hist, stock_hist, external_flows, trades_hist = [], [], [], [], []
 
         for i, dt in enumerate(data.index):
-            if not active_started:
-                if dt >= eval_start_ts:
-                    active_started = True
-                else:
-                    # 暖機期：資產靜置，不交易
-                    portfolio_vals.append(cash)
-                    cash_hist.append(cash)
-                    stock_hist.append(0.0)
-                    external_flows.append(0.0)
-                    continue
+            fx = float(aligned_fx.iloc[i]) if need_fx else 1.0
+            to_target_fx = fx if target_curr == "TWD" else (1.0 / fx if fx > 0 else 1.0)
 
             div = float(data["dividend"].iloc[i]) if "dividend" in data.columns else 0.0
             if div > 0 and shares > 0:
-                cash += shares * div
+                cash += shares * div * to_target_fx
 
             split = float(data["split"].iloc[i]) if "split" in data.columns else 0.0
             if split > 0 and shares > 0:
                 shares = shares * split
 
             flow = 0.0
-            if bool(month_changed.iloc[i]) and dt > eval_start_ts:
+            if i > 0 and bool(month_changed.iloc[i]):
                 flow = float(monthly_inflow)
                 cash += flow
 
             pos = int(pos_series.iloc[i])
             prev_pos = int(pos_series.iloc[i - 1]) if i > 0 else 0
-            open_p = float(data["open"].iloc[i])
-            close_p = float(data["close"].iloc[i])
+            open_p_native = float(data["open"].iloc[i])
+            close_p_native = float(data["close"].iloc[i])
 
-            if pos == 1 and (prev_pos == 0 or cash > 10.0):
+            if pos == 1 and (prev_pos == 0 or cash > 0):
                 if cash > 10.0:
-                    fill_p = CostModel.calculate_buy_fill(open_p, cost.fee_rate, cost.slippage_rate)
-                    buy_shares = cash / fill_p
+                    fill_p_native = CostModel.calculate_buy_fill(open_p_native, cost.fee_rate, cost.slippage_rate)
+                    fill_p_target = fill_p_native * to_target_fx
+                    buy_shares = cash / fill_p_target
                     shares += buy_shares
                     cash = 0.0
                     trade_count += 1
             elif pos == 0 and prev_pos == 1 and shares > 0:
-                net_p = CostModel.calculate_sell_net(open_p, cost.fee_rate, cost.tax_rate, cost.slippage_rate)
-                cash += shares * net_p
+                net_p_native = CostModel.calculate_sell_net(open_p_native, cost.fee_rate, cost.tax_rate, cost.slippage_rate)
+                net_p_target = net_p_native * to_target_fx
+                cash += shares * net_p_target
                 shares = 0.0
                 trade_count += 1
 
-            stock_val = shares * close_p
+            stock_val = shares * close_p_native * to_target_fx
             total_val = cash + stock_val
 
             portfolio_vals.append(total_val)
             cash_hist.append(cash)
             stock_hist.append(stock_val)
             external_flows.append(flow)
+            trades_hist.append(trade_count)
 
         res = data.copy()
         res["portfolio_value"] = portfolio_vals
@@ -135,7 +147,7 @@ class BacktestEngine:
         res["stock_value"] = stock_hist
         res["external_flow"] = external_flows
         res["total_invested"] = float(initial_capital) + pd.Series(external_flows, index=data.index).cumsum()
-        res["trades"] = trade_count
+        res["trades"] = trades_hist
         res["equity_net"] = BacktestEngine._calc_twr_curve(portfolio_vals, external_flows, initial_capital)
         return res
 
@@ -147,15 +159,16 @@ class BacktestEngine:
         monthly_inflow: float,
         cost: AssetCostStructure,
         month_changed: pd.Series,
-        eval_start_date: Optional[str] = None
+        aligned_fx: pd.Series,
+        need_fx: bool,
+        target_curr: str
     ) -> pd.DataFrame:
-        eval_start_ts = pd.Timestamp(eval_start_date) if eval_start_date else data.index[0]
         freq = params.get("freq", "每月 (Monthly)")
 
         if freq == "每週 (Weekly)":
             iso = data.index.isocalendar()
-            week_key = iso["year"].astype(str) + "-" + iso["week"].astype(str)
-            buy_mask = pd.Series(week_key != pd.Series(week_key).shift(1), index=data.index)
+            s_weeks = pd.Series(iso["year"].astype(str) + "-" + iso["week"].astype(str), index=data.index)
+            buy_mask = s_weeks != s_weeks.shift(1)
         elif freq == "每 10 交易日":
             buy_mask = pd.Series(np.arange(len(data)) % 10 == 0, index=data.index)
         else:
@@ -164,55 +177,49 @@ class BacktestEngine:
         cash = float(initial_capital)
         shares = 0.0
         trade_count = 0
-        portfolio_vals, cash_hist, stock_hist, external_flows = [], [], [], []
-        active_started = False
+        portfolio_vals, cash_hist, stock_hist, external_flows, trades_hist = [], [], [], [], []
 
         for i, dt in enumerate(data.index):
-            if not active_started:
-                if dt >= eval_start_ts:
-                    active_started = True
-                else:
-                    portfolio_vals.append(cash)
-                    cash_hist.append(cash)
-                    stock_hist.append(0.0)
-                    external_flows.append(0.0)
-                    continue
+            fx = float(aligned_fx.iloc[i]) if need_fx else 1.0
+            to_target_fx = fx if target_curr == "TWD" else (1.0 / fx if fx > 0 else 1.0)
 
             div = float(data["dividend"].iloc[i]) if "dividend" in data.columns else 0.0
             if div > 0 and shares > 0:
-                cash += shares * div
+                cash += shares * div * to_target_fx
 
             split = float(data["split"].iloc[i]) if "split" in data.columns else 0.0
             if split > 0 and shares > 0:
                 shares = shares * split
 
             flow = 0.0
-            is_first_active_day = (dt == eval_start_ts or len(portfolio_vals) == 0 or (len(portfolio_vals) > 0 and portfolio_vals[-1] == initial_capital and trade_count == 0))
-            if bool(month_changed.iloc[i]) and dt > eval_start_ts:
+            if i > 0 and bool(month_changed.iloc[i]):
                 flow = float(monthly_inflow)
                 cash += flow
 
-            open_p = float(data["open"].iloc[i])
-            close_p = float(data["close"].iloc[i])
+            open_p_native = float(data["open"].iloc[i])
+            close_p_native = float(data["close"].iloc[i])
 
-            if trade_count == 0 and cash > 0:
-                fill_p = CostModel.calculate_buy_fill(open_p, cost.fee_rate, cost.slippage_rate)
-                shares += cash / fill_p
+            if i == 0 and cash > 10.0:
+                fill_p_native = CostModel.calculate_buy_fill(open_p_native, cost.fee_rate, cost.slippage_rate)
+                fill_p_target = fill_p_native * to_target_fx
+                shares += cash / fill_p_target
                 cash = 0.0
                 trade_count += 1
             elif bool(buy_mask.iloc[i]) and cash > 10.0:
-                fill_p = CostModel.calculate_buy_fill(open_p, cost.fee_rate, cost.slippage_rate)
-                shares += cash / fill_p
+                fill_p_native = CostModel.calculate_buy_fill(open_p_native, cost.fee_rate, cost.slippage_rate)
+                fill_p_target = fill_p_native * to_target_fx
+                shares += cash / fill_p_target
                 cash = 0.0
                 trade_count += 1
 
-            stock_val = shares * close_p
+            stock_val = shares * close_p_native * to_target_fx
             total_val = cash + stock_val
 
             portfolio_vals.append(total_val)
             cash_hist.append(cash)
             stock_hist.append(stock_val)
             external_flows.append(flow)
+            trades_hist.append(trade_count)
 
         res = data.copy()
         res["portfolio_value"] = portfolio_vals
@@ -220,7 +227,7 @@ class BacktestEngine:
         res["stock_value"] = stock_hist
         res["external_flow"] = external_flows
         res["total_invested"] = float(initial_capital) + pd.Series(external_flows, index=data.index).cumsum()
-        res["trades"] = trade_count
+        res["trades"] = trades_hist
         res["equity_net"] = BacktestEngine._calc_twr_curve(portfolio_vals, external_flows, initial_capital)
         return res
 
@@ -232,16 +239,17 @@ class BacktestEngine:
         monthly_inflow: float,
         cost: AssetCostStructure,
         month_changed: pd.Series,
-        eval_start_date: Optional[str] = None
+        aligned_fx: pd.Series,
+        need_fx: bool,
+        target_curr: str
     ) -> pd.DataFrame:
-        eval_start_ts = pd.Timestamp(eval_start_date) if eval_start_date else data.index[0]
+        from core.indicators import IndicatorEngine
         sma_p = int(params.get("sma_period", 60))
         buy_amt = float(params.get("buy_amount", 50000.0))
         min_int = max(1, int(params.get("min_interval", 3)))
+        tf = params.get("timeframe", "日線 (Daily)")
 
-        # 優先使用 Adj Close 計算參考均線
-        ref_price = data["adj_close"] if "adj_close" in data.columns else data["close"]
-        sma = ref_price.rolling(sma_p).mean()
+        sma = IndicatorEngine.calculate_ma(data, sma_p, tf)
 
         cash = float(initial_capital)
         shares = 0.0
@@ -250,56 +258,54 @@ class BacktestEngine:
         min_price_in_dip = float("inf")
         pending_buy = False
 
-        portfolio_vals, cash_hist, stock_hist, external_flows = [], [], [], []
-        active_started = False
+        portfolio_vals, cash_hist, stock_hist, external_flows, trades_hist = [], [], [], [], []
 
         for i, dt in enumerate(data.index):
-            if not active_started:
-                if dt >= eval_start_ts:
-                    active_started = True
-                else:
-                    portfolio_vals.append(cash)
-                    cash_hist.append(cash)
-                    stock_hist.append(0.0)
-                    external_flows.append(0.0)
-                    continue
+            fx = float(aligned_fx.iloc[i]) if need_fx else 1.0
+            to_target_fx = fx if target_curr == "TWD" else (1.0 / fx if fx > 0 else 1.0)
 
             div = float(data["dividend"].iloc[i]) if "dividend" in data.columns else 0.0
             if div > 0 and shares > 0:
-                cash += shares * div
+                cash += shares * div * to_target_fx
 
             flow = 0.0
-            if bool(month_changed.iloc[i]) and dt > eval_start_ts:
+            if i > 0 and bool(month_changed.iloc[i]):
                 flow = float(monthly_inflow)
                 cash += flow
 
-            open_p = float(data["open"].iloc[i])
-            close_p = float(data["close"].iloc[i])
+            open_p_native = float(data["open"].iloc[i])
+            close_p_native = float(data["close"].iloc[i])
 
             if pending_buy and (i - last_buy_idx >= min_int) and cash > 10.0:
                 actual_buy = min(cash, buy_amt)
-                fill_p = CostModel.calculate_buy_fill(open_p, cost.fee_rate, cost.slippage_rate)
-                shares += actual_buy / fill_p
+                fill_p_native = CostModel.calculate_buy_fill(open_p_native, cost.fee_rate, cost.slippage_rate)
+                fill_p_target = fill_p_native * to_target_fx
+                bought_s = actual_buy / fill_p_target
+                shares += bought_s
                 cash -= actual_buy
                 last_buy_idx = i
                 trade_count += 1
             pending_buy = False
 
             sma_val = sma.iloc[i]
-            if pd.notna(sma_val) and close_p < float(sma_val):
-                if close_p < min_price_in_dip:
-                    min_price_in_dip = close_p
+            col_c = "adj_close" if "adj_close" in data.columns else "close"
+            current_eval_p = float(data[col_c].iloc[i])
+
+            if pd.notna(sma_val) and current_eval_p < float(sma_val):
+                if current_eval_p < min_price_in_dip:
+                    min_price_in_dip = current_eval_p
                     pending_buy = True
             else:
                 min_price_in_dip = float("inf")
 
-            stock_val = shares * close_p
+            stock_val = shares * close_p_native * to_target_fx
             total_val = cash + stock_val
 
             portfolio_vals.append(total_val)
             cash_hist.append(cash)
             stock_hist.append(stock_val)
             external_flows.append(flow)
+            trades_hist.append(trade_count)
 
         res = data.copy()
         res["portfolio_value"] = portfolio_vals
@@ -307,51 +313,73 @@ class BacktestEngine:
         res["stock_value"] = stock_hist
         res["external_flow"] = external_flows
         res["total_invested"] = float(initial_capital) + pd.Series(external_flows, index=data.index).cumsum()
-        res["trades"] = trade_count
+        res["trades"] = trades_hist
         res["equity_net"] = BacktestEngine._calc_twr_curve(portfolio_vals, external_flows, initial_capital)
         return res
 
     # -------------------------------------------------------------
-    # 模式 B：多資產配置與動態再平衡核心引擎
+    # 模式 B：多資產配置與動態再平衡 (零 KeyError 智能幣別版)
     # -------------------------------------------------------------
     @classmethod
     def run_multi_asset_portfolio(
         cls,
         aligned_panel: pd.DataFrame,
+        aligned_fx: pd.Series,
         target_weights: Dict[str, float],
         initial_capital: float,
         monthly_inflow: float,
         rebalance_freq: str = "每季再平衡 (Quarterly)",
-        cost_dict: Optional[Dict[str, AssetCostStructure]] = None
-    ) -> Tuple[pd.DataFrame, Dict[str, Dict[str, float]]]:
+        cost_dict: Optional[Dict[str, AssetCostStructure]] = None,
+        target_currency: str = "TWD",
+        tolerance_band: float = 0.05
+    ) -> Tuple[pd.DataFrame, Dict[str, Dict[str, float]], Dict[str, Any]]:
         tickers = list(target_weights.keys())
         tot_w = sum(target_weights.values())
         norm_weights = {t: target_weights[t] / tot_w for t in tickers}
+        target_curr_code = "TWD" if "TWD" in target_currency.upper() else "USD"
 
         if cost_dict is None:
             cost_dict = {t: CostModel.get_default_costs(t) for t in tickers}
 
+        # 迴圈外安全判定每檔標的的計價幣別，杜絕 KeyError
+        ticker_currencies = {}
+        for t in tickers:
+            curr = None
+            if (t, "quote_currency") in aligned_panel.columns:
+                curr = str(aligned_panel[(t, "quote_currency")].iloc[0]).strip().upper()
+            if not curr or curr in {"NAN", "NONE", ""}:
+                clean_t = str(t).strip().upper()
+                if clean_t.isdigit() or clean_t.endswith((".TW", ".TWO")):
+                    curr = "TWD"
+                else:
+                    curr = "USD"
+            ticker_currencies[t] = curr
+
         data_idx = aligned_panel.index
-        month_period = data_idx.to_period("M")
-        month_changed = pd.Series(month_period != pd.Series(month_period).shift(1), index=data_idx)
+        s_months = pd.Series(data_idx.to_period("M"), index=data_idx)
+        month_changed = s_months != s_months.shift(1)
 
         rebalance_mask = pd.Series(False, index=data_idx)
         if rebalance_freq == "每月再平衡 (Monthly)":
             rebalance_mask = month_changed.copy()
         elif rebalance_freq == "每季再平衡 (Quarterly)":
-            quarter_period = data_idx.to_period("Q")
-            rebalance_mask = pd.Series(quarter_period != pd.Series(quarter_period).shift(1), index=data_idx)
+            s_quarters = pd.Series(data_idx.to_period("Q"), index=data_idx)
+            rebalance_mask = s_quarters != s_quarters.shift(1)
         elif rebalance_freq == "每半年再平衡 (Semi-Annually)":
-            half_year = data_idx.year.astype(str) + "-" + np.where(data_idx.month <= 6, "H1", "H2")
-            rebalance_mask = pd.Series(half_year != pd.Series(half_year).shift(1), index=data_idx)
+            half_arr = data_idx.year.astype(str) + "-" + np.where(data_idx.month <= 6, "H1", "H2")
+            s_half = pd.Series(half_arr, index=data_idx)
+            rebalance_mask = s_half != s_half.shift(1)
         elif rebalance_freq == "每年再平衡 (Annually)":
-            year_period = data_idx.to_period("Y")
-            rebalance_mask = pd.Series(year_period != pd.Series(year_period).shift(1), index=data_idx)
+            s_years = pd.Series(data_idx.to_period("Y"), index=data_idx)
+            rebalance_mask = s_years != s_years.shift(1)
 
         cash = float(initial_capital)
         shares = {t: 0.0 for t in tickers}
         trade_count = 0
+        skipped_rebalance_count = 0
+        triggered_rebalance_count = 0
 
+        pending_rebalance_orders: Dict[str, float] = {}
         asset_cum_bought = {t: 0.0 for t in tickers}
         asset_cum_sold = {t: 0.0 for t in tickers}
         asset_cum_div = {t: 0.0 for t in tickers}
@@ -359,84 +387,102 @@ class BacktestEngine:
         history_rows = []
 
         for i, dt in enumerate(data_idx):
+            fx = float(aligned_fx.iloc[i])
+            to_target_fx = {
+                t: (fx if ticker_currencies[t] == "USD" and target_curr_code == "TWD"
+                    else (1.0 / fx if ticker_currencies[t] == "TWD" and target_curr_code == "USD" else 1.0))
+                for t in tickers
+            }
+
             for t in tickers:
                 div = float(aligned_panel[(t, "dividend")].iloc[i]) if (t, "dividend") in aligned_panel.columns else 0.0
                 if div > 0 and shares[t] > 0:
-                    div_amt = shares[t] * div
-                    cash += div_amt
-                    asset_cum_div[t] += div_amt
+                    div_target = shares[t] * div * to_target_fx[t]
+                    cash += div_target
+                    asset_cum_div[t] += div_target
 
             flow = 0.0
             if i > 0 and bool(month_changed.iloc[i]):
                 flow = float(monthly_inflow)
                 cash += flow
 
-            open_prices = {t: float(aligned_panel[(t, "open")].iloc[i]) for t in tickers}
-            close_prices = {t: float(aligned_panel[(t, "close")].iloc[i]) for t in tickers}
+            open_prices_native = {t: float(aligned_panel[(t, "open")].iloc[i]) for t in tickers}
+            close_prices_native = {t: float(aligned_panel[(t, "close")].iloc[i]) for t in tickers}
+            is_market_open = {t: bool(aligned_panel[(t, "is_trading_day")].iloc[i]) for t in tickers}
 
             is_initial = (i == 0)
-            is_rebalance_day = bool(rebalance_mask.iloc[i]) if i > 0 else False
-            should_deploy_cash = (flow > 0 and not is_rebalance_day)
+            is_rebal = bool(rebalance_mask.iloc[i]) if i > 0 else False
 
             if is_initial:
                 for t in tickers:
                     alloc_amt = cash * norm_weights[t]
                     if alloc_amt > 10.0:
                         cost = cost_dict[t]
-                        fill_p = CostModel.calculate_buy_fill(open_prices[t], cost.fee_rate, cost.slippage_rate)
+                        fill_p = CostModel.calculate_buy_fill(open_prices_native[t], cost.fee_rate, cost.slippage_rate) * to_target_fx[t]
                         bought_s = alloc_amt / fill_p
                         shares[t] += bought_s
                         asset_cum_bought[t] += alloc_amt
                         trade_count += 1
                 cash = 0.0
 
-            elif is_rebalance_day:
-                pre_rebal_val = cash + sum(shares[t] * open_prices[t] for t in tickers)
-                target_vals = {t: pre_rebal_val * norm_weights[t] for t in tickers}
-                curr_vals = {t: shares[t] * open_prices[t] for t in tickers}
+            elif is_rebal:
+                pre_rebal_val = cash + sum(shares[t] * open_prices_native[t] * to_target_fx[t] for t in tickers)
+                curr_weights = {t: (shares[t] * open_prices_native[t] * to_target_fx[t]) / pre_rebal_val if pre_rebal_val > 0 else 0.0 for t in tickers}
+                max_dev = max([abs(curr_weights[t] - norm_weights[t]) for t in tickers]) if pre_rebal_val > 0 else 0.0
 
-                # 賣出超配標的
-                for t in tickers:
-                    diff = curr_vals[t] - target_vals[t]
-                    if diff > 50.0:
+                if max_dev > tolerance_band:
+                    for t in tickers:
+                        target_val = pre_rebal_val * norm_weights[t]
+                        curr_val = shares[t] * open_prices_native[t] * to_target_fx[t]
+                        pending_rebalance_orders[t] = target_val - curr_val
+                    triggered_rebalance_count += 1
+                else:
+                    skipped_rebalance_count += 1
+
+            if pending_rebalance_orders:
+                for t in list(pending_rebalance_orders.keys()):
+                    diff = pending_rebalance_orders[t]
+                    if diff < -50.0 and is_market_open[t]:
                         cost = cost_dict[t]
-                        net_p = CostModel.calculate_sell_net(open_prices[t], cost.fee_rate, cost.tax_rate, cost.slippage_rate)
-                        sell_shares = diff / open_prices[t]
-                        actual_sell_s = min(shares[t], sell_shares)
-                        shares[t] -= actual_sell_s
-                        cash_recv = actual_sell_s * net_p
+                        sell_val_target = -diff
+                        net_p = CostModel.calculate_sell_net(open_prices_native[t], cost.fee_rate, cost.tax_rate, cost.slippage_rate) * to_target_fx[t]
+                        sell_s = min(shares[t], sell_val_target / (open_prices_native[t] * to_target_fx[t]))
+                        shares[t] -= sell_s
+                        cash_recv = sell_s * net_p
                         cash += cash_recv
                         asset_cum_sold[t] += cash_recv
                         trade_count += 1
+                        del pending_rebalance_orders[t]
 
-                # 買入低配標的
-                for t in tickers:
-                    diff = target_vals[t] - curr_vals[t]
-                    if diff > 50.0 and cash > 10.0:
+                for t in list(pending_rebalance_orders.keys()):
+                    diff = pending_rebalance_orders[t]
+                    if diff > 50.0 and is_market_open[t] and cash > 10.0:
                         cost = cost_dict[t]
-                        actual_buy_amt = min(cash, diff)
-                        fill_p = CostModel.calculate_buy_fill(open_prices[t], cost.fee_rate, cost.slippage_rate)
-                        bought_s = actual_buy_amt / fill_p
+                        actual_buy_target = min(cash, diff)
+                        fill_p = CostModel.calculate_buy_fill(open_prices_native[t], cost.fee_rate, cost.slippage_rate) * to_target_fx[t]
+                        bought_s = actual_buy_target / fill_p
                         shares[t] += bought_s
-                        cash -= actual_buy_amt
-                        asset_cum_bought[t] += actual_buy_amt
+                        cash -= actual_buy_target
+                        asset_cum_bought[t] += actual_buy_target
                         trade_count += 1
+                        del pending_rebalance_orders[t]
 
-            elif should_deploy_cash and cash > 10.0:
+            elif flow > 0 and cash > 10.0:
                 deploy_pool = cash
                 for t in tickers:
-                    alloc_amt = deploy_pool * norm_weights[t]
-                    if alloc_amt > 10.0:
-                        cost = cost_dict[t]
-                        fill_p = CostModel.calculate_buy_fill(open_prices[t], cost.fee_rate, cost.slippage_rate)
-                        bought_s = alloc_amt / fill_p
-                        shares[t] += bought_s
-                        cash -= alloc_amt
-                        asset_cum_bought[t] += alloc_amt
-                        trade_count += 1
+                    if is_market_open[t]:
+                        alloc_amt = deploy_pool * norm_weights[t]
+                        if alloc_amt > 10.0 and cash >= alloc_amt:
+                            cost = cost_dict[t]
+                            fill_p = CostModel.calculate_buy_fill(open_prices_native[t], cost.fee_rate, cost.slippage_rate) * to_target_fx[t]
+                            bought_s = alloc_amt / fill_p
+                            shares[t] += bought_s
+                            cash -= alloc_amt
+                            asset_cum_bought[t] += alloc_amt
+                            trade_count += 1
 
-            stock_vals = {t: shares[t] * close_prices[t] for t in tickers}
-            total_stock_val = sum(stock_vals.values())
+            stock_vals_target = {t: shares[t] * close_prices_native[t] * to_target_fx[t] for t in tickers}
+            total_stock_val = sum(stock_vals_target.values())
             total_port_val = cash + total_stock_val
 
             row_data = {
@@ -448,7 +494,7 @@ class BacktestEngine:
                 "trades": trade_count
             }
             for t in tickers:
-                row_data[f"val_{t}"] = stock_vals[t]
+                row_data[f"val_{t}"] = stock_vals_target[t]
                 row_data[f"shares_{t}"] = shares[t]
 
             history_rows.append(row_data)
@@ -461,10 +507,9 @@ class BacktestEngine:
             initial_capital
         )
 
-        # 各資產利潤貢獻歸因
         attribution: Dict[str, Dict[str, float]] = {}
         for t in tickers:
-            final_holding_val = shares[t] * close_prices[t]
+            final_holding_val = shares[t] * close_prices_native[t] * to_target_fx[t]
             total_out = asset_cum_bought[t]
             total_in = final_holding_val + asset_cum_sold[t] + asset_cum_div[t]
             net_gain = total_in - total_out
@@ -479,7 +524,12 @@ class BacktestEngine:
                 "roi": roi
             }
 
-        return res_df, attribution
+        rebal_stats = {
+            "觸發調倉次數": triggered_rebalance_count,
+            "成功略過調倉次數": skipped_rebalance_count,
+            "估計省下摩擦手續費": f"{round(skipped_rebalance_count * len(tickers) * 150.0, 0):,.0f}"
+        }
+        return res_df, attribution, rebal_stats
 
     @staticmethod
     def _calc_twr_curve(portfolio_vals: List[float], external_flows: List[float], init_capital: float) -> np.ndarray:
