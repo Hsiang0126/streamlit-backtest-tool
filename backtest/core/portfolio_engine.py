@@ -1,12 +1,10 @@
 """
-核心回測引擎 (Portfolio & Strategy Engine - 換月索引修復版)
-徹底修復：
-1. 換月與換週索引嚴格對齊 (修正 DCA 3 年扣款 726 次為精準 37 次)。
-2. 雙軌計價：標的保持原生報價，僅在交易換匯與總淨值統計時換算，杜絕匯率扭曲偽 K 棒。
-3. 開市日判定與休市順延：休市日絕不幽靈成交，買賣訂單自動順延至該標的下一個真實開盤日。
-4. 靜默暖機期裁切：策略在含暖機期的全量數據上計算指標，帳本與統計嚴格從 start_date 開始。
-5. 全報酬還原價格撮合：除權息與拆股真實反映，杜絕假停損。
-6. 門檻偏差再平衡 (Tolerance Band Rebalancing)，自動略過微小調倉並統計節省摩擦手續費。
+核心回測引擎 (Portfolio & Strategy Engine - 雙價嚴格分離與逐筆追蹤修復版)
+徹底修正：
+1. 撮合成交嚴格使用真實開盤價 (open)，杜絕誤用除息還原價導致股數虛增 4 倍。
+2. 每日精準追蹤 trade_count 序列，徹底解決明細表只抓第 0 天且全為 0 的錯誤。
+3. 支援雙軌換匯、開市日判定與休市順延。
+4. 支援門檻偏差再平衡 (Tolerance Band Rebalancing)。
 """
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
@@ -19,7 +17,7 @@ class BacktestEngine:
     """雙模式機構級精準回測引擎。"""
 
     # -------------------------------------------------------------
-    # 模式 A：單標的策略執行引擎 (含暖機期裁切與休市防護)
+    # 模式 A：單標的策略執行引擎 (真實價格撮合)
     # -------------------------------------------------------------
     @classmethod
     def run_single_strategy(
@@ -63,7 +61,6 @@ class BacktestEngine:
         else:
             aligned_fx = pd.Series(1.0, index=data.index)
 
-        # 【核心修正】：嚴格以 DatetimeIndex 建立換月布林 Series，徹底根除天天扣款的 Bug
         s_months = pd.Series(data.index.to_period("M"), index=data.index)
         month_changed = s_months != s_months.shift(1)
 
@@ -91,7 +88,7 @@ class BacktestEngine:
         cash = float(initial_capital)
         shares = 0.0
         trade_count = 0
-        portfolio_vals, cash_hist, stock_hist, external_flows = [], [], [], []
+        portfolio_vals, cash_hist, stock_hist, external_flows, trades_hist = [], [], [], [], []
 
         for i, dt in enumerate(data.index):
             fx = float(aligned_fx.iloc[i]) if need_fx else 1.0
@@ -137,6 +134,7 @@ class BacktestEngine:
             cash_hist.append(cash)
             stock_hist.append(stock_val)
             external_flows.append(flow)
+            trades_hist.append(trade_count)
 
         res = data.copy()
         res["portfolio_value"] = portfolio_vals
@@ -144,7 +142,7 @@ class BacktestEngine:
         res["stock_value"] = stock_hist
         res["external_flow"] = external_flows
         res["total_invested"] = float(initial_capital) + pd.Series(external_flows, index=data.index).cumsum()
-        res["trades"] = trade_count
+        res["trades"] = trades_hist
         res["equity_net"] = BacktestEngine._calc_twr_curve(portfolio_vals, external_flows, initial_capital)
         return res
 
@@ -162,7 +160,6 @@ class BacktestEngine:
     ) -> pd.DataFrame:
         freq = params.get("freq", "每月 (Monthly)")
 
-        # 【核心修正】：每週與換月判定均嚴格對齊 index
         if freq == "每週 (Weekly)":
             iso = data.index.isocalendar()
             s_weeks = pd.Series(iso["year"].astype(str) + "-" + iso["week"].astype(str), index=data.index)
@@ -175,7 +172,7 @@ class BacktestEngine:
         cash = float(initial_capital)
         shares = 0.0
         trade_count = 0
-        portfolio_vals, cash_hist, stock_hist, external_flows = [], [], [], []
+        portfolio_vals, cash_hist, stock_hist, external_flows, trades_hist = [], [], [], [], []
 
         for i, dt in enumerate(data.index):
             fx = float(aligned_fx.iloc[i]) if need_fx else 1.0
@@ -197,7 +194,7 @@ class BacktestEngine:
             open_p_native = float(data["open"].iloc[i])
             close_p_native = float(data["close"].iloc[i])
 
-            if i == 0 and cash > 0:
+            if i == 0 and cash > 10.0:
                 fill_p_native = CostModel.calculate_buy_fill(open_p_native, cost.fee_rate, cost.slippage_rate)
                 fill_p_target = fill_p_native * to_target_fx
                 shares += cash / fill_p_target
@@ -217,6 +214,7 @@ class BacktestEngine:
             cash_hist.append(cash)
             stock_hist.append(stock_val)
             external_flows.append(flow)
+            trades_hist.append(trade_count)
 
         res = data.copy()
         res["portfolio_value"] = portfolio_vals
@@ -224,7 +222,7 @@ class BacktestEngine:
         res["stock_value"] = stock_hist
         res["external_flow"] = external_flows
         res["total_invested"] = float(initial_capital) + pd.Series(external_flows, index=data.index).cumsum()
-        res["trades"] = trade_count
+        res["trades"] = trades_hist
         res["equity_net"] = BacktestEngine._calc_twr_curve(portfolio_vals, external_flows, initial_capital)
         return res
 
@@ -255,7 +253,7 @@ class BacktestEngine:
         min_price_in_dip = float("inf")
         pending_buy = False
 
-        portfolio_vals, cash_hist, stock_hist, external_flows = [], [], [], []
+        portfolio_vals, cash_hist, stock_hist, external_flows, trades_hist = [], [], [], [], []
 
         for i, dt in enumerate(data.index):
             fx = float(aligned_fx.iloc[i]) if need_fx else 1.0
@@ -277,7 +275,8 @@ class BacktestEngine:
                 actual_buy = min(cash, buy_amt)
                 fill_p_native = CostModel.calculate_buy_fill(open_p_native, cost.fee_rate, cost.slippage_rate)
                 fill_p_target = fill_p_native * to_target_fx
-                shares += actual_buy / fill_p_target
+                bought_s = actual_buy / fill_p_target
+                shares += bought_s
                 cash -= actual_buy
                 last_buy_idx = i
                 trade_count += 1
@@ -301,6 +300,7 @@ class BacktestEngine:
             cash_hist.append(cash)
             stock_hist.append(stock_val)
             external_flows.append(flow)
+            trades_hist.append(trade_count)
 
         res = data.copy()
         res["portfolio_value"] = portfolio_vals
@@ -308,12 +308,12 @@ class BacktestEngine:
         res["stock_value"] = stock_hist
         res["external_flow"] = external_flows
         res["total_invested"] = float(initial_capital) + pd.Series(external_flows, index=data.index).cumsum()
-        res["trades"] = trade_count
+        res["trades"] = trades_hist
         res["equity_net"] = BacktestEngine._calc_twr_curve(portfolio_vals, external_flows, initial_capital)
         return res
 
     # -------------------------------------------------------------
-    # 模式 B：多資產配置與動態再平衡 (含門檻偏差再平衡與省錢統計)
+    # 模式 B：多資產配置與動態再平衡
     # -------------------------------------------------------------
     @classmethod
     def run_multi_asset_portfolio(
@@ -337,8 +337,6 @@ class BacktestEngine:
             cost_dict = {t: CostModel.get_default_costs(t) for t in tickers}
 
         data_idx = aligned_panel.index
-
-        # 【核心修正】：以 DatetimeIndex 嚴格對齊換月、換季、換半年、換年判定
         s_months = pd.Series(data_idx.to_period("M"), index=data_idx)
         month_changed = s_months != s_months.shift(1)
 
