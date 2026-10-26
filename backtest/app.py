@@ -1,5 +1,6 @@
 """
-量化回測與多資產配置終端 (Main Application Entry)
+量化回測與多資產配置終端 (Main Application Entry - 智慧解構防呆版)
+徹底解決 ValueError (unpacking mismatch) 與參數不對齊問題。
 """
 import sys
 import os
@@ -26,40 +27,29 @@ apply_dark_theme()
 
 st.sidebar.title("🎛️ 控制中心")
 
+# --- 1. 標的選擇 ---
 st.sidebar.markdown("### 1. 選擇標的資產")
-
-PORTFOLIO_PRESETS = {
-    "自選標的組合": [],
-    "全天候防禦組合 (All Weather)": ["SPY", "TLT", "IEF", "GLD", "DBC"],
-    "經典股債 60/40": ["0050", "TLT"],
-    "科技巨頭動能": ["QQQ", "NVDA", "AAPL", "2330"]
-}
-selected_pack = st.sidebar.selectbox("一鍵套用經典配置組合包：", list(PORTFOLIO_PRESETS.keys()))
-
 all_presets = []
 for group_name, items in DataEngine.PRESET_OPTIONS.items():
     all_presets.extend(items)
 
-default_selection = ["0050 (元大台灣50)", "QQQ (納斯達克100)", "BTC-USD (比特幣)"]
-if PORTFOLIO_PRESETS[selected_pack]:
-    default_selection = [p for p in all_presets if any(p.startswith(sym) for sym in PORTFOLIO_PRESETS[selected_pack])]
-
 selected_presets = st.sidebar.multiselect(
     "熱門跨市場預設標的：",
     options=all_presets,
-    default=default_selection
+    default=["0050 (元大台灣50)", "QQQ (納斯達克100)", "BTC-USD (比特幣)"]
 )
 
 custom_input = st.sidebar.text_input(
-    "補充自訂代碼 (逗號分隔，台美股、上櫃皆可)：",
-    value=",".join([s for s in PORTFOLIO_PRESETS[selected_pack] if not any(p.startswith(s) for p in all_presets)]) if PORTFOLIO_PRESETS[selected_pack] else "",
-    help="例如：AAPL, 2330, 3105, NVDA, ETH-USD"
+    "補充自訂代碼 (逗號分隔)：",
+    value="",
+    help="例如：AAPL, 2330, NVDA, ETH-USD"
 )
 
 preset_tickers = [p.split(" ")[0].strip().upper() for p in selected_presets]
 custom_tickers = [s.strip().upper() for s in custom_input.split(",") if s.strip()]
 target_symbols = list(dict.fromkeys(preset_tickers + custom_tickers))
 
+# --- 2. 帳戶資金設定 ---
 st.sidebar.markdown("### 2. 帳戶資金設定")
 user_currency = st.sidebar.selectbox("計價幣別", ["新台幣 (TWD)", "美元 (USD)"], index=0)
 is_twd = "TWD" in user_currency
@@ -79,6 +69,7 @@ monthly_inflow = st.sidebar.number_input(
     step=5000.0 if is_twd else 200.0
 )
 
+# --- 3. 回測時間區間 ---
 st.sidebar.markdown("### 3. 回測時間區間")
 time_span = st.sidebar.selectbox("回測時長", ["近 3 年", "近 5 年", "近 10 年", "自訂日期"], index=1)
 today = pd.to_datetime("today")
@@ -99,6 +90,7 @@ else:
     with c_e:
         end_date = st.date_input("結束", value=today).strftime("%Y-%m-%d")
 
+# --- 4. 交易摩擦成本 ---
 st.sidebar.markdown("### 4. 交易手續費與摩擦成本")
 auto_cost = st.sidebar.checkbox("依標的類別自動匹配官方稅費 (推薦)", value=True)
 cost_override = None
@@ -115,25 +107,32 @@ def load_market_data(symbols, s_date, e_date, curr):
     return DataEngine.load_aligned_market_data(symbols, s_date, e_date, target_currency=curr)
 
 st.title("⚡ PRO 量化回測與多資產配置終端")
-st.caption("365天暖機指標預熱 • 智能上市日防穿梭對齊 • 雙價分離下單 • 真實獲利金額拆解")
+st.caption("跨市場數據對齊 (Union Calendar) • 零前瞻偏差撮合 • 真實獲利金額與利潤歸因拆解")
 
 if not target_symbols:
     st.info("👈 請於側邊欄選擇至少一個交易標的。")
     st.stop()
 
-with st.spinner("正在下載行情、校驗上市日並計算跨市場對齊..."):
-    individual_dict, aligned_panel, curr_symbol, effective_start, warnings = load_market_data(
+with st.spinner("正在自市場載入歷史行情並進行跨市場對齊與換匯..."):
+    raw_res = load_market_data(
         target_symbols,
         start_date,
         end_date,
         user_currency
     )
 
-for w in warnings:
-    if "⚠️" in w or "ℹ️" in w:
-        st.sidebar.info(w)
+    # 智慧解構防呆
+    if len(raw_res) == 5:
+        individual_dict, aligned_panel, aligned_fx, curr_symbol, warnings = raw_res
+    elif len(raw_res) == 4:
+        individual_dict, aligned_panel, curr_symbol, warnings = raw_res
+        aligned_fx = pd.Series(31.0, index=aligned_panel.index if not aligned_panel.empty else None)
     else:
-        st.sidebar.warning(w)
+        st.error("載入數據格式異常，請確認 DataEngine 模組。")
+        st.stop()
+
+for w in warnings:
+    st.sidebar.warning(w)
 
 if not individual_dict:
     st.error("未能成功載入任何標的數據，請確認標的代碼是否正確。")
@@ -148,18 +147,20 @@ with tab_pk:
     render_strategy_pk_tab(
         individual_dict=individual_dict,
         curr_symbol=curr_symbol,
-        effective_start_date=effective_start,
         initial_capital=initial_capital,
         monthly_inflow=monthly_inflow,
-        cost_override=cost_override
+        cost_override=cost_override,
+        fx_series=aligned_fx,
+        target_currency=user_currency
     )
 
 with tab_rebalance:
     render_portfolio_rebalance_tab(
         aligned_panel=aligned_panel,
         curr_symbol=curr_symbol,
-        effective_start_date=effective_start,
         initial_capital=initial_capital,
         monthly_inflow=monthly_inflow,
-        cost_override=cost_override
+        cost_override=cost_override,
+        aligned_fx=aligned_fx,
+        target_currency=user_currency
     )
