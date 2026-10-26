@@ -1,6 +1,6 @@
 """
-快慢線網格尋優與參數高原分析模組 (Grid Optimizer Module)
-快速計算 Fast MA (5~30) × Slow MA (30~120) 2D 矩陣，繪製參數高原，杜絕過度擬合。
+快慢線網格尋優與參數高原分析模組 (Grid Optimizer Module - 完整現金流注資版)
+支援期初本金 + 每月定投注資，快速計算 Fast MA (5~30) × Slow MA (30~120) 2D 矩陣。
 """
 from typing import Dict, Any, Tuple, Optional
 import pandas as pd
@@ -20,6 +20,7 @@ class GridOptimizer:
         slow_range: Tuple[int, int, int] = (30, 121, 5),
         timeframe: str = "日線 (Daily)",
         initial_capital: float = 300000.0,
+        monthly_inflow: float = 0.0,
         cost_struct: Optional[AssetCostStructure] = None,
         to_target_fx: float = 1.0
     ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
@@ -30,6 +31,10 @@ class GridOptimizer:
         close_p = df[col_c].values
         open_p = df["open"].values
         n_days = len(df)
+
+        # 換月判定序列 (支援定投資金注入)
+        s_months = pd.Series(df.index.to_period("M"), index=df.index)
+        month_changed = (s_months != s_months.shift(1)).values
 
         fast_vals = list(range(fast_range[0], fast_range[1], fast_range[2]))
         slow_vals = list(range(slow_range[0], slow_range[1], slow_range[2]))
@@ -59,8 +64,14 @@ class GridOptimizer:
                 cash = float(initial_capital)
                 shares = 0.0
                 trades = 0
+                cum_invested = float(initial_capital)
 
                 for i in range(n_days):
+                    # 每月初注入定投資金，徹底根治期初本金為 0 時無錢下單的錯誤
+                    if i > 0 and month_changed[i]:
+                        cash += monthly_inflow
+                        cum_invested += monthly_inflow
+
                     p_curr = pos[i]
                     p_prev = pos[i - 1] if i > 0 else 0
                     op = open_p[i]
@@ -78,8 +89,8 @@ class GridOptimizer:
                         trades += 1
 
                 final_val = cash + shares * close_p[-1] * to_target_fx
-                net_profit = final_val - initial_capital
-                roi = (net_profit / initial_capital) if initial_capital > 0 else 0.0
+                net_profit = final_val - cum_invested
+                roi = (net_profit / cum_invested) if cum_invested > 0 else 0.0
 
                 matrix_dict[slow_p][fast_p] = round(roi * 100.0, 2)
                 records.append({
