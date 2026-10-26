@@ -1,5 +1,5 @@
 """
-市場行情與數據對齊引擎 (Data Engine - 機構級重構版)
+市場行情與數據對齊引擎 (Data Engine - 5元組完整版)
 1. 雙軌計價：保留各市場原生報價 (Native Currency)，杜絕匯率污染股價 K 棒與指標。
 2. 開盤日標記 (is_trading_day)：真實反映各市場開閉市，杜絕休市日幽靈成交。
 3. 靜默暖機期 (Warm-up Window)：自動預先抓取 365 天歷史資料，確保第 1 天指標成熟非 NaN。
@@ -200,4 +200,5 @@ class DataEngine:
         aligned_panel = pd.concat(panel_dict, axis=1)
         aligned_fx = fx_rates.reindex(unified_calendar, method="ffill").fillna(31.0)
 
+        # 回傳 5 個完整元素：individual_dict, aligned_panel, aligned_fx, curr_symbol, all_warnings
         return individual_dict, aligned_panel, aligned_fx, curr_symbol, all_warnings
