@@ -2,8 +2,6 @@
 定期定額與資金管理策略 (DCA & Dip Buyer)
 """
 from typing import List, Dict, Any
-import pandas as pd
-import numpy as np
 from strategies.base import BaseStrategy, ParamSpec
 from strategies.registry import register_strategy
 
@@ -39,15 +37,22 @@ class DCAStrategy(BaseStrategy):
 class DipBuyerStrategy(BaseStrategy):
     strategy_id = "dip_buyer"
     display_name = "跌破均線且創新低買入 (Dip DCA)"
-    description = "價值低吸策略：當價格低於指定均線且跌破區間新低時，逢低分批加碼買入。"
+    description = "價值低吸策略：當價格低於指定均線且跌破區間新低時，逢低分批加碼買入。支援週線基準。"
     is_timing = False
 
     @classmethod
     def get_param_specs(cls) -> List[ParamSpec]:
         return [
             ParamSpec(
+                key="timeframe",
+                label="均線基準週期",
+                param_type="select",
+                default="日線 (Daily)",
+                options=["日線 (Daily)", "週線 (Weekly)"]
+            ),
+            ParamSpec(
                 key="sma_period",
-                label="基準均線週期 (日)",
+                label="基準均線週期 (日/週)",
                 param_type="int",
                 default=60,
                 min_value=5,
