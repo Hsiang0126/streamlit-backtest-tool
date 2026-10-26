@@ -1,10 +1,6 @@
 """
-分頁 2：多資產配置與定期再平衡模式 (Multi-Asset Allocation & Rebalancing - 頂級增強版)
-包含：
-- 功能 D：門檻偏差再平衡 (Tolerance Band Rebalancing)，自動略過微小調倉
-- 省錢統計卡片：直觀呈現節省下來的調倉次數與手續費/證交稅
-- 資產利潤拆解圖 (Profit Attribution)
-- 📥 一鍵下載每日投資組合資產軌跡 (CSV)
+分頁 2：多資產配置與定期再平衡模式 (Multi-Asset Allocation & Rebalancing - 防呆完全相容版)
+徹底解決 TypeError 參數漏傳問題，支援門檻偏差再平衡、節省手續費統計與 CSV 匯出。
 """
 from typing import Dict, Optional
 import streamlit as st
@@ -20,20 +16,21 @@ from ui.theme import render_metric_card
 
 def render_portfolio_rebalance_tab(
     aligned_panel: pd.DataFrame,
-    aligned_fx: pd.Series,
-    curr_symbol: str,
-    initial_capital: float,
-    monthly_inflow: float,
+    curr_symbol: str = "NT$",
+    initial_capital: float = 300000.0,
+    monthly_inflow: float = 30000.0,
     cost_override: Optional[AssetCostStructure] = None,
+    aligned_fx: Optional[pd.Series] = None,
     target_currency: str = "TWD"
 ):
     st.header("💼 多資產權重配置與定期再平衡")
     st.caption("將資金分散投資於多個跨市場標的，透過紀律性的定期再平衡 (Rebalancing)，獲取資產配置紅利。")
 
-    if aligned_panel.empty:
+    if aligned_panel is None or aligned_panel.empty:
         st.info("👈 請在側邊欄選擇至少兩個標的並加載市場數據。")
         return
 
+    # 防呆提取可用標的
     if isinstance(aligned_panel.columns, pd.MultiIndex):
         tickers = list(dict.fromkeys(aligned_panel.columns.get_level_values(0)))
     else:
@@ -41,6 +38,13 @@ def render_portfolio_rebalance_tab(
     if len(tickers) < 2:
         st.warning("多資產配置模式建議至少選擇 2 檔標的（例如：美股 QQQ + 台股 0050）。")
 
+    # 防呆補齊匯率
+    if aligned_fx is None or aligned_fx.empty:
+        aligned_fx = pd.Series(31.0, index=aligned_panel.index)
+    else:
+        aligned_fx = aligned_fx.reindex(aligned_panel.index, method="ffill").fillna(31.0)
+
+    # 1. 配置目標權重與再平衡頻率
     st.subheader("1. 設定各資產配置目標比例")
     cols = st.columns(min(len(tickers), 4))
     raw_weights = {}
@@ -64,6 +68,7 @@ def render_portfolio_rebalance_tab(
 
     target_weights = {t: raw_weights[t] / 100.0 for t in tickers}
 
+    # 再平衡機制與省錢門檻設定
     st.subheader("2. 再平衡機制與省錢門檻設定")
     c_freq, c_band = st.columns([1, 1])
     with c_freq:
@@ -102,6 +107,7 @@ def render_portfolio_rebalance_tab(
 
         m = PerformanceMetrics.evaluate(res_df, curr_symbol=curr_symbol, initial_capital=initial_capital)
 
+    # 3. 核心指標與省錢成果展示
     st.subheader("📊 投資組合整體獲利總覽")
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     net_gain = m["_raw_net_profit"]
@@ -121,6 +127,7 @@ def render_portfolio_rebalance_tab(
             f"估計為您少繳約 **{curr_symbol} {rebal_stats['估計省下摩擦手續費']} 元** 的摩擦手續費與證交稅！"
         )
 
+    # 4. 利潤拆解圖
     st.subheader("🎯 哪項資產最賺錢？各標的利潤貢獻拆解 (Profit Attribution)")
     attrib_rows = []
     for t, attr in attribution.items():
@@ -164,6 +171,7 @@ def render_portfolio_rebalance_tab(
         )
         st.plotly_chart(fig_bar, use_container_width=True)
 
+    # 5. 總資產成長 vs 累計投入本金
     st.subheader("📈 總資產增長歷程 vs 累積投入本金")
     fig_growth = go.Figure()
     fig_growth.add_trace(go.Scatter(
@@ -194,6 +202,7 @@ def render_portfolio_rebalance_tab(
     )
     st.plotly_chart(fig_growth, use_container_width=True)
 
+    # 下載投資組合資產軌跡 CSV
     csv_port = res_df.to_csv(index=True, encoding="utf-8-sig")
     st.download_button(
         label="📥 下載投資組合每日資產軌跡與明細 (CSV)",
