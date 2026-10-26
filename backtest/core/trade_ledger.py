@@ -16,14 +16,10 @@ class TradeLedger:
         res_df: pd.DataFrame,
         curr_symbol: str = "NT$"
     ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-        """
-        從回測結果中提取每一次「買入扣款」的真實歷史紀錄 (專門支援 DCA、Dip DCA 與定投買入)。
-        """
         if res_df is None or "trades" not in res_df.columns:
             return pd.DataFrame(), {}
 
         trades_series = res_df["trades"]
-        # 精準找出交易次數有遞增的那一天
         trade_diff = trades_series.diff().fillna(trades_series.iloc[0])
         buy_mask = trade_diff > 0
 
@@ -45,7 +41,6 @@ class TradeLedger:
             curr_shares = stock_val / close_p if close_p > 0 else 0.0
             bought_shares = max(0.0, curr_shares - prev_shares)
 
-            # 防呆：如果當天沒有真實持股市值且本金為 0，代表尚未啟動，略過不顯示
             if stock_val <= 0 and invested_now <= 0:
                 continue
 
