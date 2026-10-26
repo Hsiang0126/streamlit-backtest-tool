@@ -71,7 +71,6 @@ class PerformanceMetrics:
 
     @classmethod
     def evaluate(cls, df: pd.DataFrame, curr_symbol: str = "NT$", initial_capital: float = 0.0) -> Dict[str, Any]:
-        """評估單次回測產出的帳務紀錄，輸出清晰可讀與 raw 雙重字典。"""
         if df is None or len(df) < 2 or "portfolio_value" not in df.columns:
             return {}
 
@@ -103,7 +102,9 @@ class PerformanceMetrics:
         dates.append(pd.Timestamp(df.index[-1]))
         xirr = cls.calculate_xirr(cashflows, dates)
 
-        trades = int(df["trades"].iloc[-1]) if "trades" in df.columns else 0
+        trades = int(df["trades"].iloc[-1]) if "trades" in df.columns and isinstance(df["trades"].iloc[-1], (int, np.integer)) else (
+            int(df["trades"].iloc[-1]) if "trades" in df.columns and pd.notna(df["trades"].iloc[-1]) else 0
+        )
 
         return {
             "累積投入本金": f"{curr_symbol} {total_invested:,.0f}",
