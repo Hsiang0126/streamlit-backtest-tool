@@ -1,10 +1,10 @@
 """
-核心回測引擎 (Portfolio & Strategy Engine - 雙價嚴格分離與逐筆追蹤修復版)
+核心回測引擎 (Portfolio & Strategy Engine - 零 KeyError 極致防呆版)
 徹底修正：
-1. 撮合成交嚴格使用真實開盤價 (open)，杜絕誤用除息還原價導致股數虛增 4 倍。
-2. 每日精準追蹤 trade_count 序列，徹底解決明細表只抓第 0 天且全為 0 的錯誤。
-3. 支援雙軌換匯、開市日判定與休市順延。
-4. 支援門檻偏差再平衡 (Tolerance Band Rebalancing)。
+1. 幣別判斷極致防呆 (智慧代碼偵測 Fallback)，徹底根除 aligned_panel[(t, "quote_currency")] 的 KeyError。
+2. 撮合成交嚴格使用真實開盤價 (open)，杜絕誤用除息還原價導致股數虛增。
+3. 每日精準追蹤 trade_count 序列，完美支援 DCA/Dip DCA 逐筆購買歷史。
+4. 門檻偏差再平衡 (Tolerance Band Rebalancing)，自動略過微小調倉並統計節省摩擦手續費。
 """
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
@@ -36,7 +36,12 @@ class BacktestEngine:
             raise ValueError(f"未註冊的策略：{strat_name}")
 
         full_data = df.copy().sort_index()
-        quote_curr = full_data.get("quote_currency", pd.Series("USD", index=full_data.index)).iloc[0]
+
+        # 防呆提取報價幣別
+        if "quote_currency" in full_data.columns:
+            quote_curr = str(full_data["quote_currency"].iloc[0]).strip().upper()
+        else:
+            quote_curr = "TWD" if "TWD" in target_currency.upper() else "USD"
 
         if strat_cls.is_timing:
             raw_sig = strat_cls.generate_signals(full_data, strat_params)
@@ -313,7 +318,7 @@ class BacktestEngine:
         return res
 
     # -------------------------------------------------------------
-    # 模式 B：多資產配置與動態再平衡
+    # 模式 B：多資產配置與動態再平衡 (零 KeyError 智能幣別版)
     # -------------------------------------------------------------
     @classmethod
     def run_multi_asset_portfolio(
@@ -335,6 +340,21 @@ class BacktestEngine:
 
         if cost_dict is None:
             cost_dict = {t: CostModel.get_default_costs(t) for t in tickers}
+
+        # 【核心修復】：在迴圈外預先安全判定每檔標的的計價幣別，徹底根絕 KeyError！
+        ticker_currencies = {}
+        for t in tickers:
+            curr = None
+            if (t, "quote_currency") in aligned_panel.columns:
+                curr = str(aligned_panel[(t, "quote_currency")].iloc[0]).strip().upper()
+            if not curr or curr in {"NAN", "NONE", ""}:
+                # 備用智慧代碼特徵判斷 (0050、2330 為 TWD，QQQ、BTC 為 USD)
+                clean_t = str(t).strip().upper()
+                if clean_t.isdigit() or clean_t.endswith((".TW", ".TWO")):
+                    curr = "TWD"
+                else:
+                    curr = "USD"
+            ticker_currencies[t] = curr
 
         data_idx = aligned_panel.index
         s_months = pd.Series(data_idx.to_period("M"), index=data_idx)
@@ -369,9 +389,10 @@ class BacktestEngine:
 
         for i, dt in enumerate(data_idx):
             fx = float(aligned_fx.iloc[i])
+            # 使用迴圈外已確認安全的 ticker_currencies 字典，絕不再碰 DataFrame 下標！
             to_target_fx = {
-                t: (fx if aligned_panel[(t, "quote_currency")].iloc[0] == "USD" and target_curr_code == "TWD"
-                    else (1.0 / fx if aligned_panel[(t, "quote_currency")].iloc[0] == "TWD" and target_curr_code == "USD" else 1.0))
+                t: (fx if ticker_currencies[t] == "USD" and target_curr_code == "TWD"
+                    else (1.0 / fx if ticker_currencies[t] == "TWD" and target_curr_code == "USD" else 1.0))
                 for t in tickers
             }
 
