@@ -1,6 +1,9 @@
 """
-市場行情與數據對齊引擎 (Data Engine)
-支援 yfinance 批量下載、USD/TWD 匯率換算、跨市場日曆聯集 (Union Calendar) 與前值填補 (ffill)。
+市場行情與數據對齊引擎 (Data Engine - 機構級重構版)
+1. 雙軌計價：保留各市場原生報價 (Native Currency)，杜絕匯率污染股價 K 棒與指標。
+2. 開盤日標記 (is_trading_day)：真實反映各市場開閉市，杜絕休市日幽靈成交。
+3. 靜默暖機期 (Warm-up Window)：自動預先抓取 365 天歷史資料，確保第 1 天指標成熟非 NaN。
+4. 還原價格提取 (adj_close)：提供全報酬還原價格供技術指標計算，杜絕除權息假跌破。
 """
 from typing import List, Dict, Tuple, Optional
 import yfinance as yf
@@ -9,7 +12,7 @@ import numpy as np
 
 
 class DataEngine:
-    """市場行情資料下載、清洗與跨市場對齊器。"""
+    """市場行情資料下載、清洗與跨市場真實對齊器。"""
 
     PRESET_OPTIONS = {
         "美股指數與權值": ["QQQ (納斯達克100)", "AAPL (蘋果)", "NVDA (輝達)", "SPY (S&P 500)", "TSLA (特斯拉)", "MSFT (微軟)"],
@@ -37,7 +40,6 @@ class DataEngine:
 
     @classmethod
     def clean_ohlc(cls, df: pd.DataFrame, ticker: str) -> Tuple[pd.DataFrame, List[str]]:
-        """清理與校正單一標的的 OHLC 資料。"""
         warnings = []
         if df is None or df.empty:
             return pd.DataFrame(), [f"{ticker}：無行情數據。"]
@@ -46,7 +48,7 @@ class DataEngine:
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = [c[0] if isinstance(c, tuple) else c for c in data.columns]
 
-        data.columns = [str(c).lower() for c in data.columns]
+        data.columns = [str(c).lower().replace(" ", "_") for c in data.columns]
         req_cols = {"open", "high", "low", "close"}
         if not req_cols.issubset(data.columns):
             if "close" in data.columns:
@@ -59,13 +61,18 @@ class DataEngine:
         for c in req_cols:
             data[c] = pd.to_numeric(data[c], errors="coerce")
 
+        if "adj_close" in data.columns:
+            data["adj_close"] = pd.to_numeric(data["adj_close"], errors="coerce").fillna(data["close"])
+        else:
+            data["adj_close"] = data["close"].copy()
+
         if "dividends" in data.columns:
             data["dividend"] = pd.to_numeric(data["dividends"], errors="coerce").fillna(0.0)
         elif "dividend" not in data.columns:
             data["dividend"] = 0.0
 
-        if "stock splits" in data.columns:
-            data["split"] = pd.to_numeric(data["stock splits"], errors="coerce").fillna(0.0)
+        if "stock_splits" in data.columns:
+            data["split"] = pd.to_numeric(data["stock_splits"], errors="coerce").fillna(0.0)
         elif "split" not in data.columns:
             data["split"] = 0.0
 
@@ -80,41 +87,9 @@ class DataEngine:
 
         data["high"] = data[["high", "open", "close"]].max(axis=1)
         data["low"] = data[["low", "open", "close"]].min(axis=1)
+        data["is_trading_day"] = True
 
-        return data[["open", "high", "low", "close", "dividend", "split"]], warnings
-
-    @classmethod
-    def convert_currency(
-        cls, 
-        df: pd.DataFrame, 
-        quote_curr: str, 
-        target_curr: str, 
-        fx_rates: Optional[pd.Series]
-    ) -> pd.DataFrame:
-        if quote_curr == target_curr or fx_rates is None or fx_rates.empty:
-            return df.copy()
-
-        rates = pd.to_numeric(fx_rates, errors="coerce").dropna().sort_index()
-        aligned_fx = rates.reindex(df.index, method="ffill")
-        prior_fx = rates.shift(1).reindex(df.index, method="ffill")
-        valid_mask = aligned_fx.notna() & prior_fx.notna() & (aligned_fx > 0) & (prior_fx > 0)
-
-        converted = df.loc[valid_mask].copy()
-        fx_cur = aligned_fx.loc[valid_mask].astype(float)
-        fx_pre = prior_fx.loc[valid_mask].astype(float)
-
-        if target_curr == "TWD" and quote_curr == "USD":
-            converted["open"] = converted["open"] * fx_pre
-            for col in ("close", "high", "low", "dividend"):
-                converted[col] = converted[col] * fx_cur
-        elif target_curr == "USD" and quote_curr == "TWD":
-            converted["open"] = converted["open"] / fx_pre
-            for col in ("close", "high", "low", "dividend"):
-                converted[col] = converted[col] / fx_cur
-
-        converted["high"] = converted[["high", "open", "close"]].max(axis=1)
-        converted["low"] = converted[["low", "open", "close"]].min(axis=1)
-        return converted
+        return data[["open", "high", "low", "close", "adj_close", "dividend", "split", "is_trading_day"]], warnings
 
     @classmethod
     def load_aligned_market_data(
@@ -124,30 +99,27 @@ class DataEngine:
         end_date: str,
         target_currency: str = "TWD",
         currency_overrides: Optional[Dict[str, str]] = None
-    ) -> Tuple[Dict[str, pd.DataFrame], pd.DataFrame, str, List[str]]:
+    ) -> Tuple[Dict[str, pd.DataFrame], pd.DataFrame, pd.Series, str, List[str]]:
         all_warnings = []
         fmt_to_orig = {cls.normalize_ticker(t): t.strip().upper() for t in tickers if t.strip()}
         if not fmt_to_orig:
-            return {}, pd.DataFrame(), "NT$", ["未提供有效標的代碼。"]
+            return {}, pd.DataFrame(), pd.Series(dtype=float), "NT$", ["未提供有效標的代碼。"]
 
         download_list = list(fmt_to_orig.keys())
-        needed_fx = False
         target_curr_code = "TWD" if "TWD" in target_currency.upper() else "USD"
 
-        for fmt_t, orig_t in fmt_to_orig.items():
-            qc = cls.detect_quote_currency(orig_t, currency_overrides)
-            if qc != target_curr_code:
-                needed_fx = True
-                break
-
-        if needed_fx and "USDTWD=X" not in download_list:
+        if "USDTWD=X" not in download_list:
             download_list.append("USDTWD=X")
+
+        user_start_ts = pd.Timestamp(start_date)
+        warmup_start_ts = user_start_ts - pd.Timedelta(days=365)
+        end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1)
 
         try:
             raw_data = yf.download(
                 download_list,
-                start=pd.Timestamp(start_date) - pd.Timedelta(days=35),
-                end=pd.Timestamp(end_date) + pd.Timedelta(days=1),
+                start=warmup_start_ts,
+                end=end_ts,
                 auto_adjust=False,
                 actions=True,
                 group_by="ticker",
@@ -155,25 +127,28 @@ class DataEngine:
                 threads=True
             )
         except Exception as exc:
-            return {}, pd.DataFrame(), ("NT$" if target_curr_code == "TWD" else "$"), [f"下載資料失敗：{exc}"]
+            return {}, pd.DataFrame(), pd.Series(dtype=float), ("NT$" if target_curr_code == "TWD" else "$"), [f"下載資料失敗：{exc}"]
 
-        fx_rates = None
-        if needed_fx:
-            try:
-                if isinstance(raw_data.columns, pd.MultiIndex) and "USDTWD=X" in raw_data.columns.levels[0]:
-                    fx_frame = raw_data["USDTWD=X"]
-                else:
-                    fx_frame = raw_data
-                if "Close" in fx_frame.columns:
-                    fx_rates = pd.to_numeric(fx_frame["Close"], errors="coerce").dropna()
-                    fx_rates.index = pd.to_datetime(fx_rates.index)
-            except Exception:
-                all_warnings.append("USD/TWD 匯率擷取異常，換匯可能受影響。")
+        fx_rates = pd.Series(1.0, index=pd.date_range(warmup_start_ts, end_ts))
+        try:
+            if isinstance(raw_data.columns, pd.MultiIndex) and "USDTWD=X" in raw_data.columns.levels[0]:
+                fx_frame = raw_data["USDTWD=X"]
+            else:
+                fx_frame = raw_data
+            if "Close" in fx_frame.columns:
+                extracted = pd.to_numeric(fx_frame["Close"], errors="coerce").dropna()
+                extracted.index = pd.to_datetime(extracted.index)
+                if not extracted.empty:
+                    fx_rates = extracted
+        except Exception:
+            all_warnings.append("USD/TWD 匯率擷取異常，預設匯率為 1.0。")
 
         individual_dict: Dict[str, pd.DataFrame] = {}
-        all_dates_set = set()
+        trading_calendar_set = set()
 
         for fmt_t, orig_t in fmt_to_orig.items():
+            if orig_t == "USDTWD=X":
+                continue
             try:
                 if len(download_list) == 1 and not isinstance(raw_data.columns, pd.MultiIndex):
                     sub_df = raw_data.copy()
@@ -192,38 +167,37 @@ class DataEngine:
                     continue
 
                 quote_curr = cls.detect_quote_currency(orig_t, currency_overrides)
-                converted = cls.convert_currency(cleaned, quote_curr, target_curr_code, fx_rates)
-                
-                user_start = pd.Timestamp(start_date)
-                converted = converted[converted.index >= user_start]
-                if converted.empty:
-                    all_warnings.append(f"{orig_t}：在指定日期範圍內無有效數據。")
-                    continue
+                cleaned["quote_currency"] = quote_curr
+                cleaned["user_start_idx"] = (cleaned.index >= user_start_ts)
 
-                individual_dict[orig_t] = converted
-                all_dates_set.update(converted.index)
+                individual_dict[orig_t] = cleaned
+                active_days = cleaned[cleaned.index >= user_start_ts].index
+                trading_calendar_set.update(active_days)
             except Exception as exc:
                 all_warnings.append(f"{orig_t} 資料處理異常：{exc}")
 
-        if not individual_dict:
-            curr_symbol = "NT$" if target_curr_code == "TWD" else "$"
-            return {}, pd.DataFrame(), curr_symbol, all_warnings
+        curr_symbol = "NT$" if target_curr_code == "TWD" else "$"
+        if not individual_dict or not trading_calendar_set:
+            return {}, pd.DataFrame(), fx_rates, curr_symbol, all_warnings
 
-        # 跨市場交易日聯集 (Union Calendar)
-        unified_calendar = pd.DatetimeIndex(sorted(list(all_dates_set)))
+        unified_calendar = pd.DatetimeIndex(sorted(list(trading_calendar_set)))
 
-        # 建立對齊總表 aligned_panel (MultiIndex: [Ticker, Metric])
         panel_dict = {}
         for orig_t, df in individual_dict.items():
-            aligned_df = df.reindex(unified_calendar)
-            aligned_df["close"] = aligned_df["close"].ffill().bfill()
-            aligned_df["open"] = aligned_df["open"].fillna(aligned_df["close"])
-            aligned_df["high"] = aligned_df["high"].fillna(aligned_df["close"])
-            aligned_df["low"] = aligned_df["low"].fillna(aligned_df["close"])
-            aligned_df["dividend"] = aligned_df["dividend"].fillna(0.0)
-            aligned_df["split"] = aligned_df["split"].fillna(0.0)
-            panel_dict[orig_t] = aligned_df
+            sub = df[df.index >= user_start_ts].copy()
+            aligned = sub.reindex(unified_calendar)
+            aligned["is_trading_day"] = aligned["is_trading_day"].fillna(False).astype(bool)
+            aligned["close"] = aligned["close"].ffill().bfill()
+            aligned["open"] = aligned["open"].fillna(aligned["close"])
+            aligned["high"] = aligned["high"].fillna(aligned["close"])
+            aligned["low"] = aligned["low"].fillna(aligned["close"])
+            aligned["adj_close"] = aligned["adj_close"].ffill().bfill()
+            aligned["dividend"] = aligned["dividend"].fillna(0.0)
+            aligned["split"] = aligned["split"].fillna(0.0)
+            aligned["quote_currency"] = df["quote_currency"].iloc[0]
+            panel_dict[orig_t] = aligned
 
         aligned_panel = pd.concat(panel_dict, axis=1)
-        curr_symbol = "NT$" if target_curr_code == "TWD" else "$"
-        return individual_dict, aligned_panel, curr_symbol, all_warnings
+        aligned_fx = fx_rates.reindex(unified_calendar, method="ffill").fillna(31.0)
+
+        return individual_dict, aligned_panel, aligned_fx, curr_symbol, all_warnings
