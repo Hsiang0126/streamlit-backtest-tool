@@ -1,4 +1,7 @@
-"""深色金融終端 UI 主題樣式 (Dark Terminal Theme)。"""
+"""
+深色金融終端 UI 主題樣式 (Dark Terminal Theme)
+提供專業、高對比、沉浸式的量化終端視覺體驗。
+"""
 import streamlit as st
 
 
