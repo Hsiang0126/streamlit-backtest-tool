@@ -3,7 +3,7 @@
 包含：
 - 完整支援 DCA、Dip DCA 與擇時策略之逐筆成交/購買歷史 (Purchase Ledger) ＋ 📥 下載 CSV
 - K 線進出場標記圖 (TradingView 質感 🟢買入 / 🔴賣出箭頭)
-- 功能 C：快慢線 2D 尋優熱力圖 (參數高原檢驗，杜絕過度擬合) ＋ 📥 下載尋優 CSV
+- 功能 C：快慢線 2D 尋優熱力圖 (僅在選取 SMA 雙均線策略時智慧顯示，其餘隱藏)
 """
 from typing import Dict, Any, Optional
 import streamlit as st
@@ -214,7 +214,7 @@ def render_strategy_pk_tab(
     if inspect_strat in equity_curves:
         res_curve = equity_curves[inspect_strat]
 
-        # 如果是 DCA 或 Dip DCA：展示逐筆扣款購買歷史表
+        # DCA 或 Dip DCA：展示逐筆扣款購買歷史表
         if inspect_strat not in strategy_pos_dict:
             buys_df, buy_summary = TradeLedger.extract_buy_records(res_curve, curr_symbol)
             if not buys_df.empty:
@@ -241,7 +241,7 @@ def render_strategy_pk_tab(
             else:
                 st.info("該策略在回測期間內無購買紀錄。")
 
-        # 如果是擇時策略：展示進出場配對表與 K 線圖
+        # 擇時策略：展示進出場配對表與 K 線圖
         else:
             pos_s = strategy_pos_dict[inspect_strat]
             trades_df, summary = TradeLedger.extract_trades(
@@ -272,40 +272,46 @@ def render_strategy_pk_tab(
                     key="btn_download_trades"
                 )
 
-    # 功能 C：快慢線 2D 尋優熱力圖 (參數高原檢驗)
-    st.subheader("🔥 功能 C：快慢線網格尋優 2D 熱力圖 (尋找穩健參數高原)")
-    st.caption("自動測試快線 (5~30) × 慢線 (30~120) 的所有排列組合，以顏色深淺呈現獲利空間，幫你避開過度擬合的孤島陷阱。")
+    # -------------------------------------------------------------
+    # 功能 C：快慢線 2D 尋優熱力圖 (【智慧判定】：只有在選取 SMA 雙均線交叉時才顯示！)
+    # -------------------------------------------------------------
+    has_sma_crossover = any("SMA 雙均線交叉" in s for s in selected_strats)
 
-    with st.expander("🚀 點擊展開快慢線參數高原尋優面板", expanded=False):
-        c_opt1, c_opt2, c_opt3 = st.columns(3)
-        with c_opt1:
-            fast_step = st.selectbox("快線步長 (Step)", [1, 2, 3], index=1, help="步長為 2 代表測試 5, 7, 9... 29")
-        with c_opt2:
-            slow_step = st.selectbox("慢線步長 (Step)", [2, 5, 10], index=1, help="步長為 5 代表測試 30, 35, 40... 120")
-        with c_opt3:
-            opt_tf = st.selectbox("尋優時間週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
+    if has_sma_crossover:
+        st.subheader("🔥 功能 C：快慢線網格尋優 2D 熱力圖 (尋找穩健參數高原)")
+        st.caption("自動測試快線 (5~30) × 慢線 (30~120) 的所有排列組合，以顏色深淺呈現獲利空間，幫你避開過度擬合的孤島陷阱。")
 
-        if st.button("⚡ 開始跑快慢線 2D 矩陣尋優", key="btn_run_grid_opt"):
-            with st.spinner("正在極速計算 200+ 組快慢線組合之收益矩陣..."):
-                heatmap_matrix, flat_results, best_param = GridOptimizer.run_ma_grid(
-                    df_target,
-                    fast_range=(5, 31, fast_step),
-                    slow_range=(30, 121, slow_step),
-                    timeframe=opt_tf,
-                    initial_capital=initial_capital,
-                    cost_struct=cost_struct
+        with st.expander("🚀 點擊展開快慢線參數高原尋優面板", expanded=False):
+            c_opt1, c_opt2, c_opt3 = st.columns(3)
+            with c_opt1:
+                fast_step = st.selectbox("快線步長 (Step)", [1, 2, 3], index=1, help="步長為 2 代表測試 5, 7, 9... 29")
+            with c_opt2:
+                slow_step = st.selectbox("慢線步長 (Step)", [2, 5, 10], index=1, help="步長為 5 代表測試 30, 35, 40... 120")
+            with c_opt3:
+                opt_tf = st.selectbox("尋優時間週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
+
+            if st.button("⚡ 開始跑快慢線 2D 矩陣尋優", key="btn_run_grid_opt"):
+                with st.spinner("正在極速計算 200+ 組快慢線組合之收益矩陣..."):
+                    heatmap_matrix, flat_results, best_param = GridOptimizer.run_ma_grid(
+                        df_target,
+                        fast_range=(5, 31, fast_step),
+                        slow_range=(30, 121, slow_step),
+                        timeframe=opt_tf,
+                        initial_capital=initial_capital,
+                        monthly_inflow=monthly_inflow,
+                        cost_struct=cost_struct
+                    )
+
+                st.success(f"🎉 尋優完成！歷史最高報酬參數組合：**快線 {best_param.get('快線')} / 慢線 {best_param.get('慢線')}**，總報酬率達 **{best_param.get('總報酬率 (%)')}%**！")
+                st.markdown("💡 **架構師指引**：觀察下方熱力圖，如果最佳參數周圍也是一片深綠色（**寬廣高原**），代表參數非常穩健；如果是孤零零的一個綠點（**孤島**），請不要採用！")
+
+                render_parameter_heatmap(heatmap_matrix, curr_symbol)
+
+                csv_grid = flat_results.to_csv(index=False, encoding="utf-8-sig")
+                st.download_button(
+                    label="📥 下載快慢線尋優排列表 (CSV)",
+                    data=csv_grid,
+                    file_name=f"{target_ticker}_MA_grid_search_results.csv",
+                    mime="text/csv",
+                    key="btn_download_grid"
                 )
-
-            st.success(f"🎉 尋優完成！歷史最高報酬參數組合：**快線 {best_param.get('快線')} / 慢線 {best_param.get('慢線')}**，總報酬率達 **{best_param.get('總報酬率 (%)')}%**！")
-            st.markdown("💡 **架構師指引**：觀察下方熱力圖，如果最佳參數周圍也是一片深綠色（**寬廣高原**），代表參數非常穩健；如果是孤零零的一個綠點（**孤島**），請不要採用！")
-
-            render_parameter_heatmap(heatmap_matrix, curr_symbol)
-
-            csv_grid = flat_results.to_csv(index=False, encoding="utf-8-sig")
-            st.download_button(
-                label="📥 下載快慢線尋優排列表 (CSV)",
-                data=csv_grid,
-                file_name=f"{target_ticker}_MA_grid_search_results.csv",
-                mime="text/csv",
-                key="btn_download_grid"
-            )
