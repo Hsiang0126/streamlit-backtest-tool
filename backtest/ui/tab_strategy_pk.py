@@ -270,24 +270,50 @@ def render_strategy_pk_tab(
                     key="btn_download_trades"
                 )
 
-    # 功能 C：快慢線 2D 尋優熱力圖 (僅在選取 SMA 雙均線交叉時顯示)
+          # 功能 C：快慢線 2D 尋優熱力圖 (僅在選取 SMA 雙均線交叉時顯示)
     has_sma_crossover = any("SMA 雙均線交叉" in s for s in selected_strats)
 
     if has_sma_crossover:
-        st.subheader("🔥 功能 C：快慢線網格尋優 2D 熱力圖 (尋找穩健參數高原)")
-        st.caption("自動測試快線 (5~30) × 慢線 (30~120) 的所有排列組合，以顏色深淺呈現獲利空間，幫你避開過度擬合的孤島陷阱。")
+        st.markdown("---")
+        st.subheader("🔥 策略深度尋優：快慢線 2D 矩陣熱力圖 (尋找穩健參數高原)")
+        
+        st.markdown(
+            """
+            系統將自動對齊並回測 **快線（5 至 30 週期 / 短期動能）** 與 **慢線（30 至 120 週期 / 長期趨勢）** 的所有排列組合。
+            透過 2D 顏色深淺直觀呈現獲利空間，協助你一眼識破歷史運氣，避開過度擬合的陷阱。
+            """
+        )
 
-        with st.expander("🚀 點擊展開快慢線參數高原尋優面板", expanded=False):
+        with st.expander("🚀 點擊展開「快慢線參數高原尋優」控制面板", expanded=False):
+            # 判讀教學引導卡
+            st.info(
+                """
+                🧭 **量化熱力圖判讀守則：**
+                * 🟢 **參數高原（推薦採用）**：最佳參數周遭同樣是一大片綠色，代表即便市場節奏微變，策略依然具備高容錯率與獲利能力。
+                * 🔴 **孤島陷阱（嚴禁採用）**：僅單一綠點獲利極高，但周圍全是一片暗紅或虧損，代表該績效純屬歷史雜訊巧合，實盤極易失效。
+                """
+            )
+
             c_opt1, c_opt2, c_opt3 = st.columns(3)
             with c_opt1:
-                fast_step = st.selectbox("快線步長 (Step)", [1, 2, 3], index=1, help="步長為 2 代表測試 5, 7, 9... 29")
+                fast_step = st.selectbox(
+                    "快線測試步長 (Fast Step)", 
+                    [1, 2, 3], 
+                    index=1, 
+                    help="設定每隔幾週期測試一次。若選 2，則依序測試 5, 7, 9 ... 29 週期"
+                )
             with c_opt2:
-                slow_step = st.selectbox("慢線步長 (Step)", [2, 5, 10], index=1, help="步長為 5 代表測試 30, 35, 40... 120")
+                slow_step = st.selectbox(
+                    "慢線測試步長 (Slow Step)", 
+                    [2, 5, 10], 
+                    index=1, 
+                    help="設定每隔幾週期測試一次。若選 5，則依序測試 30, 35, 40 ... 120 週期"
+                )
             with c_opt3:
-                opt_tf = st.selectbox("尋優時間週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
+                opt_tf = st.selectbox("尋優計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
 
-            if st.button("⚡ 開始跑快慢線 2D 矩陣尋優", key="btn_run_grid_opt"):
-                with st.spinner("正在極速計算 200+ 組快慢線組合之收益矩陣..."):
+            if st.button("⚡ 開始執行 200+ 組參數矩陣運算", key="btn_run_grid_opt"):
+                with st.spinner("正在極速計算快慢線排列組合之跨期收益矩陣..."):
                     heatmap_matrix, flat_results, best_param = GridOptimizer.run_ma_grid(
                         df_target,
                         fast_range=(5, 31, fast_step),
@@ -298,9 +324,13 @@ def render_strategy_pk_tab(
                         cost_struct=cost_struct
                     )
 
-                st.success(f"🎉 尋優完成！歷史最高報酬參數組合：**快線 {best_param.get('快線')} / 慢線 {best_param.get('慢線')}**，總報酬率達 **{best_param.get('總報酬率 (%)')}%**！")
-                st.markdown("💡 **架構師指引**：觀察下方熱力圖，如果最佳參數周圍也是一片深綠色（**寬廣高原**），代表參數非常穩健；如果是孤零零的一個綠點（**孤島**），請不要採用！")
-
+                # 結果卡片
+                st.success(
+                    f"🎉 **尋優運算完成！** 歷史獲利冠軍參數：**快線 {best_param.get('快線')} 週期 / 慢線 {best_param.get('慢線')} 週期**，"
+                    f"總報酬率達 **{best_param.get('總報酬率 (%)'):+.2f}%**（累計交易 {best_param.get('交易次數')} 次）！"
+                )
+                
+                st.caption("📊 下圖 X 軸為快線週期、Y 軸為慢線週期；顏色越綠代表報酬率越高，灰色/暗色為平盤，紅色為虧損：")
                 render_parameter_heatmap(heatmap_matrix, curr_symbol)
 
                 csv_grid = flat_results.to_csv(index=False, encoding="utf-8-sig")
