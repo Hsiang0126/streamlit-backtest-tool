@@ -1,6 +1,9 @@
 """
-分頁 1：單標的 × 多策略 PK 模式 (Single Asset Multi-Strategy PK)
-讓使用者一目了然哪一種策略最能賺錢、賺了多少現金，並以皇冠標註冠軍。
+分頁 1：單標的 × 多策略 PK 模式 (Single Asset Multi-Strategy PK - 頂級增強版)
+包含：
+- 逐筆成交帳本 (Trade Ledger) ＋ 勝率、盈虧比統計 ＋ 📥 下載 CSV
+- K 線進出場標記圖 (TradingView 質感 🟢買入 / 🔴賣出箭頭)
+- 功能 C：快慢線 2D 尋優熱力圖 (參數高原檢驗，杜絕過度擬合) ＋ 📥 下載尋優 CSV
 """
 from typing import Dict, Any, Optional
 import streamlit as st
@@ -10,8 +13,11 @@ import plotly.graph_objects as go
 from core.cost_model import CostModel, AssetCostStructure
 from core.metrics import PerformanceMetrics
 from core.portfolio_engine import BacktestEngine
+from core.trade_ledger import TradeLedger
+from core.grid_optimizer import GridOptimizer
 from strategies.registry import StrategyRegistry
 from ui.theme import render_metric_card
+from ui.components_chart import render_candlestick_with_markers, render_parameter_heatmap
 
 
 def render_strategy_pk_tab(
@@ -19,7 +25,9 @@ def render_strategy_pk_tab(
     curr_symbol: str,
     initial_capital: float,
     monthly_inflow: float,
-    cost_override: Optional[AssetCostStructure] = None
+    cost_override: Optional[AssetCostStructure] = None,
+    fx_series: Optional[pd.Series] = None,
+    target_currency: str = "TWD"
 ):
     st.header("⚔️ 單標的 × 多策略獲利 PK 模式")
     st.caption("評估同一檔資產在不同交易策略下的獲利金額與防禦能力，迅速找出最強量化策略。")
@@ -49,7 +57,7 @@ def render_strategy_pk_tab(
         st.warning("請至少勾選一種策略進行評估。")
         return
 
-    with st.expander("⚙️ 展開設定選取策略之參數", expanded=False):
+    with st.expander("⚙️ 展開設定選取策略之參數 (含日線/週線切換)", expanded=False):
         strategy_params_dict = {}
         for strat_name in selected_strats:
             strat_cls = StrategyRegistry.get(strat_name)
@@ -104,6 +112,7 @@ def render_strategy_pk_tab(
 
     results_summary = []
     equity_curves = {}
+    strategy_pos_dict = {}
 
     for strat_name in selected_strats:
         p = strategy_params_dict.get(strat_name, {})
@@ -114,12 +123,19 @@ def render_strategy_pk_tab(
                 p,
                 initial_capital,
                 monthly_inflow,
-                cost_struct
+                cost_struct,
+                fx_series=fx_series,
+                target_currency=target_currency
             )
             m = PerformanceMetrics.evaluate(res_df, curr_symbol=curr_symbol, initial_capital=initial_capital)
             m["策略名稱"] = strat_name
             results_summary.append(m)
             equity_curves[strat_name] = res_df
+
+            strat_cls = StrategyRegistry.get(strat_name)
+            if strat_cls.is_timing:
+                sig = strat_cls.generate_signals(df_target, p)
+                strategy_pos_dict[strat_name] = sig.shift(1).fillna(0).astype(int)
         except Exception as exc:
             st.error(f"策略【{strat_name}】執行失敗：{exc}")
 
@@ -157,8 +173,7 @@ def render_strategy_pk_tab(
 
     st.subheader("📈 策略資產成長曲線對比 ($)")
     fig = go.Figure()
-
-    for idx, strat_name in enumerate(selected_strats):
+    for strat_name in selected_strats:
         if strat_name in equity_curves:
             curve = equity_curves[strat_name]
             is_champ = (strat_name == champion_name)
@@ -178,7 +193,6 @@ def render_strategy_pk_tab(
         line=dict(color="#8b949e", dash="dot", width=1.5),
         hovertemplate="日期: %{x|%Y-%m-%d}<br>投入本金: " + curr_symbol + " %{y:,.0f}<extra></extra>"
     ))
-
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="#0e1117",
@@ -190,3 +204,79 @@ def render_strategy_pk_tab(
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     st.plotly_chart(fig, use_container_width=True)
+
+    # 功能 B 升級：逐筆交易帳本 ＋ K 線買賣箭頭標記 ＋ CSV 匯出
+    st.subheader("📖 逐筆成交復盤帳本 (Trade Log) & K 線買賣標記")
+    inspect_strat = st.selectbox("選擇要檢視交易細節的策略：", selected_strats, key="select_inspect_strat")
+
+    if inspect_strat in strategy_pos_dict:
+        pos_s = strategy_pos_dict[inspect_strat]
+        trades_df, summary = TradeLedger.extract_trades(
+            df_target, pos_s, cost_struct.fee_rate, cost_struct.tax_rate, cost_struct.slippage_rate, curr_symbol
+        )
+
+        m_c1, m_c2, m_c3, m_c4 = st.columns(4)
+        with m_c1:
+            render_metric_card("策略勝率 (Win Rate)", summary["勝率"], f"獲利 {summary['獲利筆數']} 筆 / 虧損 {summary['虧損筆數']} 筆", "positive" if summary["_raw_win_rate"] >= 0.5 else "negative")
+        with m_c2:
+            render_metric_card("盈虧比 (Profit Factor)", summary["盈虧比 (Profit Factor)"], "總賺 / 總賠金額比值", "positive" if summary["_raw_pf"] >= 1.5 else "neutral")
+        with m_c3:
+            render_metric_card("平均持倉天數", summary["平均持倉天數"], "每筆單平均抱單時間", "neutral")
+        with m_c4:
+            render_metric_card("已結算交易", f"{summary['已平倉交易']} 筆", f"總訊號次數 {summary['總交易次數']} 筆", "neutral")
+
+        with st.expander("🕯️ 展開查看 K 線買賣點標記圖 (🟢 買進 / 🔴 賣出箭頭)", expanded=False):
+            render_candlestick_with_markers(df_target, pos_s, target_ticker, curr_symbol)
+
+        if not trades_df.empty:
+            st.dataframe(trades_df.set_index("進場日期"), use_container_width=True)
+            csv_trades = trades_df.to_csv(index=False, encoding="utf-8-sig")
+            st.download_button(
+                label=f"📥 下載【{inspect_strat}】逐筆交易明細 (CSV)",
+                data=csv_trades,
+                file_name=f"{target_ticker}_{inspect_strat}_trade_log.csv",
+                mime="text/csv",
+                key="btn_download_trades"
+            )
+        else:
+            st.info("該策略在回測區間內無已平倉之交易紀錄。")
+    else:
+        st.info("所選策略為非擇時或買入持有型策略，持倉保持滿倉，無進出場平倉交易紀錄。")
+
+    # 功能 C 升級：快慢線 2D 尋優熱力圖 (參數高原檢驗)
+    st.subheader("🔥 功能 C：快慢線網格尋優 2D 熱力圖 (尋找穩健參數高原)")
+    st.caption("自動測試快線 (5~30) × 慢線 (30~120) 的所有排列組合，以顏色深淺呈現獲利空間，幫你避開過度擬合的孤島陷阱。")
+
+    with st.expander("🚀 點擊展開快慢線參數高原尋優面板", expanded=False):
+        c_opt1, c_opt2, c_opt3 = st.columns(3)
+        with c_opt1:
+            fast_step = st.selectbox("快線步長 (Step)", [1, 2, 3], index=1, help="步長越小測試越密，步長為 2 代表 5, 7, 9... 29")
+        with c_opt2:
+            slow_step = st.selectbox("慢線步長 (Step)", [2, 5, 10], index=1, help="步長越小測試越密，步長為 5 代表 30, 35, 40... 120")
+        with c_opt3:
+            opt_tf = st.selectbox("尋優時間週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
+
+        if st.button("⚡ 開始跑快慢線 2D 矩陣尋優", key="btn_run_grid_opt"):
+            with st.spinner("正在極速計算 200+ 組快慢線組合之收益矩陣..."):
+                heatmap_matrix, flat_results, best_param = GridOptimizer.run_ma_grid(
+                    df_target,
+                    fast_range=(5, 31, fast_step),
+                    slow_range=(30, 121, slow_step),
+                    timeframe=opt_tf,
+                    initial_capital=initial_capital,
+                    cost_struct=cost_struct
+                )
+
+            st.success(f"🎉 尋優完成！歷史最高報酬參數組合：**快線 {best_param.get('快線')} / 慢線 {best_param.get('慢線')}**，總報酬率達 **{best_param.get('總報酬率 (%)')}%**！")
+            st.markdown("💡 **架構師指引**：觀察下方熱力圖，如果最佳參數周圍也是一片深綠色（**寬廣高原**），代表參數非常穩健；如果是孤零零的一個綠點（**孤島**），請不要採用！")
+
+            render_parameter_heatmap(heatmap_matrix, curr_symbol)
+
+            csv_grid = flat_results.to_csv(index=False, encoding="utf-8-sig")
+            st.download_button(
+                label="📥 下載快慢線尋優排列表 (CSV)",
+                data=csv_grid,
+                file_name=f"{target_ticker}_MA_grid_search_results.csv",
+                mime="text/csv",
+                key="btn_download_grid"
+            )
