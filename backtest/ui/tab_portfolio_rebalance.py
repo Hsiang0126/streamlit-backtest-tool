@@ -1,6 +1,10 @@
 """
-分頁 2：多資產配置與定期再平衡模式 (Multi-Asset Allocation & Rebalancing - 防呆完全相容版)
-徹底解決 TypeError 參數漏傳問題，支援門檻偏差再平衡、節省手續費統計與 CSV 匯出。
+分頁 2：多資產配置與定期再平衡模式 (Multi-Asset Allocation & Rebalancing - AI 智慧配置版)
+包含：
+- 🧠 MPT 現代投資組合最佳化：一鍵帶入【最高夏普】、【最小波動】、【風險平價】、【等權重】
+- 🌈 效率前緣彩虹散佈圖 (Efficient Frontier)
+- 功能 D：門檻偏差再平衡 (Tolerance Band Rebalancing)，自動略過微小調倉並統計節省手續費
+- 📥 一鍵下載每日投資組合資產軌跡 (CSV)
 """
 from typing import Dict, Optional
 import streamlit as st
@@ -11,7 +15,9 @@ import plotly.graph_objects as go
 from core.cost_model import CostModel, AssetCostStructure
 from core.metrics import PerformanceMetrics
 from core.portfolio_engine import BacktestEngine
+from core.portfolio_optimizer import PortfolioOptimizer
 from ui.theme import render_metric_card
+from ui.components_chart import render_efficient_frontier
 
 
 def render_portfolio_rebalance_tab(
@@ -37,6 +43,7 @@ def render_portfolio_rebalance_tab(
         tickers = []
     if len(tickers) < 2:
         st.warning("多資產配置模式建議至少選擇 2 檔標的（例如：美股 QQQ + 台股 0050）。")
+        return
 
     # 防呆補齊匯率
     if aligned_fx is None or aligned_fx.empty:
@@ -44,31 +51,70 @@ def render_portfolio_rebalance_tab(
     else:
         aligned_fx = aligned_fx.reindex(aligned_panel.index, method="ffill").fillna(31.0)
 
-    # 1. 配置目標權重與再平衡頻率
+    # -------------------------------------------------------------
+    # 🧠 MPT 智慧權重推薦模組 (預先在後台計算好最佳權重)
+    # -------------------------------------------------------------
+    w_max_sharpe, w_min_vol, w_rp, w_eq, frontier_df, opt_summary = PortfolioOptimizer.optimize_portfolio(aligned_panel)
+
     st.subheader("1. 設定各資產配置目標比例")
+
+    # 智慧權重一鍵套用按鈕列
+    st.markdown("##### 🧠 AI 智慧權重推薦 (點擊一鍵自動填入數值)：")
+    btn_col1, btn_col2, btn_col3, btn_col4 = st.columns(4)
+
+    if btn_col1.button("🎯 帶入【最高夏普】推薦權重", help="性價比最高，以最少波動換取最大報酬"):
+        for t in tickers:
+            st.session_state[f"weight_input_{t}"] = float(w_max_sharpe.get(t, 0.0))
+        st.rerun()
+
+    if btn_col2.button("🛡️ 帶入【最小波動】推薦權重", help="走勢最平穩、最抗跌的極致防禦組合"):
+        for t in tickers:
+            st.session_state[f"weight_input_{t}"] = float(w_min_vol.get(t, 0.0))
+        st.rerun()
+
+    if btn_col3.button("⚖️ 帶入【風險平價】推薦權重", help="高波動標的權重變小，各資產風險貢獻均等"):
+        for t in tickers:
+            st.session_state[f"weight_input_{t}"] = float(w_rp.get(t, 0.0))
+        st.rerun()
+
+    if btn_col4.button("🔄 重設為【等權重 1/N】", help="所有標的平均分配"):
+        for t in tickers:
+            st.session_state[f"weight_input_{t}"] = float(w_eq.get(t, 0.0))
+        st.rerun()
+
+    # 初始化 session_state
+    eq_w = round(100.0 / len(tickers), 1)
+    for t in tickers:
+        if f"weight_input_{t}" not in st.session_state:
+            st.session_state[f"weight_input_{t}"] = float(eq_w)
+
+    # 動態輸入框 (綁定 session_state)
     cols = st.columns(min(len(tickers), 4))
     raw_weights = {}
-
-    eq_w = round(100.0 / len(tickers), 1)
     for idx, t in enumerate(tickers):
         with cols[idx % len(cols)]:
             raw_weights[t] = st.number_input(
                 f"{t} 目標權重 (%)",
                 min_value=0.0,
                 max_value=100.0,
-                value=float(eq_w),
-                step=5.0,
+                step=1.0,
                 key=f"weight_input_{t}"
             )
 
     total_weight = sum(raw_weights.values())
     if abs(total_weight - 100.0) > 0.1:
-        st.error(f"⚠️ 目前設定權重總和為 **{total_weight:.1f}%**，請調整使其剛好等於 100%。")
+        st.error(f"⚠️ 目前設定權重總和為 **{total_weight:.1f}%**，請微調使其剛好等於 100.0%。")
         return
 
     target_weights = {t: raw_weights[t] / 100.0 for t in tickers}
 
-    # 再平衡機制與省錢門檻設定
+    # 展開馬科維茨效率前緣彩虹圖
+    if not frontier_df.empty:
+        with st.expander("🌈 展開查看「馬科維茨效率前緣」彩虹散佈圖 (Efficient Frontier)", expanded=False):
+            st.caption("展示 5,000 組隨機投資組合之性價比分佈。金色星星 ⭐ 代表最高夏普點，藍色菱形 🛡️ 代表最小波動點。")
+            render_efficient_frontier(frontier_df, opt_summary)
+
+    # 2. 再平衡機制與省錢門檻設定
     st.subheader("2. 再平衡機制與省錢門檻設定")
     c_freq, c_band = st.columns([1, 1])
     with c_freq:
