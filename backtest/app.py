@@ -1,5 +1,5 @@
 """
-量化回測與多資產配置終端 (Main Application Entry)
+量化回測與多資產配置終端 (Main Application Entry - 參數對齊修復版)
 """
 import sys
 import os
@@ -109,7 +109,7 @@ if not target_symbols:
     st.stop()
 
 with st.spinner("正在自市場載入歷史行情並進行跨市場對齊與換匯..."):
-    individual_dict, aligned_panel, curr_symbol, warnings = load_market_data(
+    individual_dict, aligned_panel, aligned_fx, curr_symbol, warnings = load_market_data(
         target_symbols,
         start_date,
         end_date,
@@ -134,7 +134,9 @@ with tab_pk:
         curr_symbol=curr_symbol,
         initial_capital=initial_capital,
         monthly_inflow=monthly_inflow,
-        cost_override=cost_override
+        cost_override=cost_override,
+        fx_series=aligned_fx,
+        target_currency=user_currency
     )
 
 with tab_rebalance:
@@ -143,5 +145,7 @@ with tab_rebalance:
         curr_symbol=curr_symbol,
         initial_capital=initial_capital,
         monthly_inflow=monthly_inflow,
-        cost_override=cost_override
+        cost_override=cost_override,
+        aligned_fx=aligned_fx,
+        target_currency=user_currency
     )
