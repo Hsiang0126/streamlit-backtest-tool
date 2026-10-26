@@ -71,9 +71,7 @@ class PerformanceMetrics:
 
     @classmethod
     def evaluate(cls, df: pd.DataFrame, curr_symbol: str = "NT$", initial_capital: float = 0.0) -> Dict[str, Any]:
-        """
-        評估單次回測產出的帳務紀錄，輸出清晰可讀與 raw 雙重字典。
-        """
+        """評估單次回測產出的帳務紀錄，輸出清晰可讀與 raw 雙重字典。"""
         if df is None or len(df) < 2 or "portfolio_value" not in df.columns:
             return {}
 
