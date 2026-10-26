@@ -1,7 +1,7 @@
 """
 分頁 1：單標的 × 多策略 PK 模式 (Single Asset Multi-Strategy PK - 頂級增強版)
 包含：
-- 逐筆成交帳本 (Trade Ledger) ＋ 勝率、盈虧比統計 ＋ 📥 下載 CSV
+- 完整支援 DCA、Dip DCA 與擇時策略之逐筆成交/購買歷史 (Purchase Ledger) ＋ 📥 下載 CSV
 - K 線進出場標記圖 (TradingView 質感 🟢買入 / 🔴賣出箭頭)
 - 功能 C：快慢線 2D 尋優熱力圖 (參數高原檢驗，杜絕過度擬合) ＋ 📥 下載尋優 CSV
 """
@@ -22,9 +22,9 @@ from ui.components_chart import render_candlestick_with_markers, render_paramete
 
 def render_strategy_pk_tab(
     individual_dict: Dict[str, pd.DataFrame],
-    curr_symbol: str,
-    initial_capital: float,
-    monthly_inflow: float,
+    curr_symbol: str = "NT$",
+    initial_capital: float = 300000.0,
+    monthly_inflow: float = 30000.0,
     cost_override: Optional[AssetCostStructure] = None,
     fx_series: Optional[pd.Series] = None,
     target_currency: str = "TWD"
@@ -205,54 +205,83 @@ def render_strategy_pk_tab(
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # 功能 B 升級：逐筆交易帳本 ＋ K 線買賣箭頭標記 ＋ CSV 匯出
-    st.subheader("📖 逐筆成交復盤帳本 (Trade Log) & K 線買賣標記")
-    inspect_strat = st.selectbox("選擇要檢視交易細節的策略：", selected_strats, key="select_inspect_strat")
+    # -------------------------------------------------------------
+    # 逐筆成交 / 扣款購買歷史帳本 (全面支援 DCA 與所有策略)
+    # -------------------------------------------------------------
+    st.subheader("📖 策略成交明細帳本 (Trade / Purchase Log)")
+    inspect_strat = st.selectbox("選擇要檢視詳細交易/購買紀錄的策略：", selected_strats, key="select_inspect_strat")
 
-    if inspect_strat in strategy_pos_dict:
-        pos_s = strategy_pos_dict[inspect_strat]
-        trades_df, summary = TradeLedger.extract_trades(
-            df_target, pos_s, cost_struct.fee_rate, cost_struct.tax_rate, cost_struct.slippage_rate, curr_symbol
-        )
+    if inspect_strat in equity_curves:
+        res_curve = equity_curves[inspect_strat]
 
-        m_c1, m_c2, m_c3, m_c4 = st.columns(4)
-        with m_c1:
-            render_metric_card("策略勝率 (Win Rate)", summary["勝率"], f"獲利 {summary['獲利筆數']} 筆 / 虧損 {summary['虧損筆數']} 筆", "positive" if summary["_raw_win_rate"] >= 0.5 else "negative")
-        with m_c2:
-            render_metric_card("盈虧比 (Profit Factor)", summary["盈虧比 (Profit Factor)"], "總賺 / 總賠金額比值", "positive" if summary["_raw_pf"] >= 1.5 else "neutral")
-        with m_c3:
-            render_metric_card("平均持倉天數", summary["平均持倉天數"], "每筆單平均抱單時間", "neutral")
-        with m_c4:
-            render_metric_card("已結算交易", f"{summary['已平倉交易']} 筆", f"總訊號次數 {summary['總交易次數']} 筆", "neutral")
+        # 如果是 DCA 或 Dip DCA：展示逐筆扣款購買歷史表
+        if inspect_strat not in strategy_pos_dict:
+            buys_df, buy_summary = TradeLedger.extract_buy_records(res_curve, curr_symbol)
+            if not buys_df.empty:
+                b_c1, b_c2, b_c3, b_c4 = st.columns(4)
+                with b_c1:
+                    render_metric_card("累積扣款次數", buy_summary["累積購買次數"], "實際成功扣款筆數", "neutral")
+                with b_c2:
+                    render_metric_card("累積持有股數", buy_summary["累積持有股數"], "截至期末總持股", "neutral")
+                with b_c3:
+                    render_metric_card("平均買入成本", buy_summary["平均持股成本"], "每股加權買入成本", "positive")
+                with b_c4:
+                    render_metric_card("期末持股市值", buy_summary["期末持股市值"], "最新市值結算", "neutral")
 
-        with st.expander("🕯️ 展開查看 K 線買賣點標記圖 (🟢 買進 / 🔴 賣出箭頭)", expanded=False):
-            render_candlestick_with_markers(df_target, pos_s, target_ticker, curr_symbol)
+                st.markdown(f"##### 📅 【{inspect_strat}】逐筆扣款購買紀錄表 (共 {len(buys_df)} 筆)")
+                st.dataframe(buys_df.set_index("購買序號"), use_container_width=True)
+                csv_buys = buys_df.to_csv(index=False, encoding="utf-8-sig")
+                st.download_button(
+                    label=f"📥 下載【{inspect_strat}】購買紀錄 (CSV)",
+                    data=csv_buys,
+                    file_name=f"{target_ticker}_{inspect_strat}_purchase_history.csv",
+                    mime="text/csv",
+                    key="btn_download_buys"
+                )
+            else:
+                st.info("該策略在回測期間內無購買紀錄。")
 
-        if not trades_df.empty:
-            st.dataframe(trades_df.set_index("進場日期"), use_container_width=True)
-            csv_trades = trades_df.to_csv(index=False, encoding="utf-8-sig")
-            st.download_button(
-                label=f"📥 下載【{inspect_strat}】逐筆交易明細 (CSV)",
-                data=csv_trades,
-                file_name=f"{target_ticker}_{inspect_strat}_trade_log.csv",
-                mime="text/csv",
-                key="btn_download_trades"
-            )
+        # 如果是擇時策略：展示進出場配對表與 K 線圖
         else:
-            st.info("該策略在回測區間內無已平倉之交易紀錄。")
-    else:
-        st.info("所選策略為非擇時或買入持有型策略，持倉保持滿倉，無進出場平倉交易紀錄。")
+            pos_s = strategy_pos_dict[inspect_strat]
+            trades_df, summary = TradeLedger.extract_trades(
+                df_target, pos_s, cost_struct.fee_rate, cost_struct.tax_rate, cost_struct.slippage_rate, curr_symbol
+            )
 
-    # 功能 C 升級：快慢線 2D 尋優熱力圖 (參數高原檢驗)
+            m_c1, m_c2, m_c3, m_c4 = st.columns(4)
+            with m_c1:
+                render_metric_card("策略勝率 (Win Rate)", summary["勝率"], f"獲利 {summary['獲利筆數']} 筆 / 虧損 {summary['虧損筆數']} 筆", "positive" if summary["_raw_win_rate"] >= 0.5 else "negative")
+            with m_c2:
+                render_metric_card("盈虧比 (Profit Factor)", summary["盈虧比 (Profit Factor)"], "總賺 / 總賠金額比值", "positive" if summary["_raw_pf"] >= 1.5 else "neutral")
+            with m_c3:
+                render_metric_card("平均持倉天數", summary["平均持倉天數"], "每筆單平均抱單時間", "neutral")
+            with m_c4:
+                render_metric_card("已結算交易", f"{summary['已平倉交易']} 筆", f"總訊號次數 {summary['總交易次數']} 筆", "neutral")
+
+            with st.expander("🕯️ 展開查看 K 線買賣點標記圖 (🟢 買進 / 🔴 賣出箭頭)", expanded=False):
+                render_candlestick_with_markers(df_target, pos_s, target_ticker, curr_symbol)
+
+            if not trades_df.empty:
+                st.dataframe(trades_df.set_index("進場日期"), use_container_width=True)
+                csv_trades = trades_df.to_csv(index=False, encoding="utf-8-sig")
+                st.download_button(
+                    label=f"📥 下載【{inspect_strat}】逐筆交易明細 (CSV)",
+                    data=csv_trades,
+                    file_name=f"{target_ticker}_{inspect_strat}_trade_log.csv",
+                    mime="text/csv",
+                    key="btn_download_trades"
+                )
+
+    # 功能 C：快慢線 2D 尋優熱力圖 (參數高原檢驗)
     st.subheader("🔥 功能 C：快慢線網格尋優 2D 熱力圖 (尋找穩健參數高原)")
     st.caption("自動測試快線 (5~30) × 慢線 (30~120) 的所有排列組合，以顏色深淺呈現獲利空間，幫你避開過度擬合的孤島陷阱。")
 
     with st.expander("🚀 點擊展開快慢線參數高原尋優面板", expanded=False):
         c_opt1, c_opt2, c_opt3 = st.columns(3)
         with c_opt1:
-            fast_step = st.selectbox("快線步長 (Step)", [1, 2, 3], index=1, help="步長越小測試越密，步長為 2 代表 5, 7, 9... 29")
+            fast_step = st.selectbox("快線步長 (Step)", [1, 2, 3], index=1, help="步長為 2 代表測試 5, 7, 9... 29")
         with c_opt2:
-            slow_step = st.selectbox("慢線步長 (Step)", [2, 5, 10], index=1, help="步長越小測試越密，步長為 5 代表 30, 35, 40... 120")
+            slow_step = st.selectbox("慢線步長 (Step)", [2, 5, 10], index=1, help="步長為 5 代表測試 30, 35, 40... 120")
         with c_opt3:
             opt_tf = st.selectbox("尋優時間週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
 
