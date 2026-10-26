@@ -270,74 +270,137 @@ def render_strategy_pk_tab(
                     key="btn_download_trades"
                 )
 
-          # 功能 C：快慢線 2D 尋優熱力圖 (僅在選取 SMA 雙均線交叉時顯示)
-    has_sma_crossover = any("SMA 雙均線交叉" in s for s in selected_strats)
+         # 通用型 2D 矩陣尋優面板 (支援 SMA, MACD, RSI, KD, Dip DCA)
+    st.markdown("---")
+    st.subheader("🔥 策略深度尋優：2D 矩陣熱力圖 (尋找穩健參數高原)")
+    st.caption("自動測試雙變數的所有排列組合，以顏色深淺呈現獲利空間，避開過度擬合的「孤島陷阱」。")
 
-    if has_sma_crossover:
-        st.markdown("---")
-        st.subheader("🔥 策略深度尋優：快慢線 2D 矩陣熱力圖 (尋找穩健參數高原)")
-        
-        st.markdown(
+    with st.expander("🚀 點擊展開「通用 2D 參數高原尋優」控制台", expanded=False):
+        st.info(
             """
-            系統將自動對齊並回測 **快線（5 至 30 週期 / 短期動能）** 與 **慢線（30 至 120 週期 / 長期趨勢）** 的所有排列組合。
-            透過 2D 顏色深淺直觀呈現獲利空間，協助你一眼識破歷史運氣，避開過度擬合的陷阱。
+            🧭 **量化熱力圖判讀守則：**
+            * 🟢 **參數高原（推薦採用）**：最佳參數周遭同樣是一大片綠色，代表策略具備高容錯率與穩健生命力。
+            * 🔴 **孤島陷阱（嚴禁採用）**：僅單一綠點獲利高，周圍全是一片暗紅或虧損，代表純屬歷史雜訊巧合，實盤必死。
             """
         )
 
-        with st.expander("🚀 點擊展開「快慢線參數高原尋優」控制面板", expanded=False):
-            # 判讀教學引導卡
-            st.info(
-                """
-                🧭 **量化熱力圖判讀守則：**
-                * 🟢 **參數高原（推薦採用）**：最佳參數周遭同樣是一大片綠色，代表即便市場節奏微變，策略依然具備高容錯率與獲利能力。
-                * 🔴 **孤島陷阱（嚴禁採用）**：僅單一綠點獲利極高，但周圍全是一片暗紅或虧損，代表該績效純屬歷史雜訊巧合，實盤極易失效。
-                """
-            )
+        opt_strategy = st.selectbox(
+            "選擇要執行 2D 參數尋優的策略：",
+            options=[
+                "SMA 雙均線交叉 (快線週期 × 慢線週期)",
+                "MACD 柱狀圖/交叉 (EMA快線 × EMA慢線)",
+                "RSI 超買超賣 (超賣買入門檻 × 超買賣部門檻)",
+                "KD 隨機指標 (超賣買入K × 超買賣出K)",
+                "跌破均線且創新低買入 (基準均線 × 加碼間隔天數)"
+            ],
+            index=0
+        )
 
-            c_opt1, c_opt2, c_opt3 = st.columns(3)
+        c_opt1, c_opt2, c_opt3 = st.columns(3)
+
+        if "SMA 雙均線" in opt_strategy:
             with c_opt1:
-                fast_step = st.selectbox(
-                    "快線測試步長 (Fast Step)", 
-                    [1, 2, 3], 
-                    index=1, 
-                    help="設定每隔幾週期測試一次。若選 2，則依序測試 5, 7, 9 ... 29 週期"
-                )
+                fast_step = st.selectbox("快線步長 (Step)", [1, 2, 3], index=1, help="測試 5, 7, 9 ... 29")
             with c_opt2:
-                slow_step = st.selectbox(
-                    "慢線測試步長 (Slow Step)", 
-                    [2, 5, 10], 
-                    index=1, 
-                    help="設定每隔幾週期測試一次。若選 5，則依序測試 30, 35, 40 ... 120 週期"
-                )
+                slow_step = st.selectbox("慢線步長 (Step)", [2, 5, 10], index=1, help="測試 30, 35, 40 ... 120")
             with c_opt3:
-                opt_tf = st.selectbox("尋優計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
+                opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
 
-            if st.button("⚡ 開始執行 200+ 組參數矩陣運算", key="btn_run_grid_opt"):
-                with st.spinner("正在極速計算快慢線排列組合之跨期收益矩陣..."):
-                    heatmap_matrix, flat_results, best_param = GridOptimizer.run_ma_grid(
-                        df_target,
-                        fast_range=(5, 31, fast_step),
-                        slow_range=(30, 121, slow_step),
-                        timeframe=opt_tf,
-                        initial_capital=initial_capital,
-                        monthly_inflow=monthly_inflow,
+        elif "MACD" in opt_strategy:
+            with c_opt1:
+                fast_step = st.selectbox("快線 EMA 步長", [1, 2], index=0, help="測試 5 至 20")
+            with c_opt2:
+                slow_step = st.selectbox("慢線 EMA 步長", [1, 2, 5], index=1, help="測試 20 至 60")
+            with c_opt3:
+                opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
+
+        elif "RSI" in opt_strategy:
+            with c_opt1:
+                rsi_p = st.number_input("RSI 基準週期", value=14, min_value=5, max_value=30, step=1)
+            with c_opt2:
+                step_val = st.selectbox("門檻掃描步長", [1, 2, 5], index=1, help="超賣(15~40) 與 超買(60~85)")
+            with c_opt3:
+                opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
+
+        elif "KD" in opt_strategy:
+            with c_opt1:
+                kd_p = st.number_input("KD 基準週期", value=9, min_value=3, max_value=20, step=1)
+            with c_opt2:
+                step_val = st.selectbox("K值掃描步長", [1, 2, 5], index=1, help="買入K(15~35) 與 賣出K(65~85)")
+            with c_opt3:
+                opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
+
+        elif "跌破均線" in opt_strategy:
+            with c_opt1:
+                dip_amt = st.number_input("每次加碼買入金額", value=50000.0, step=10000.0)
+            with c_opt2:
+                sma_step = st.selectbox("均線掃描步長", [5, 10, 20], index=1, help="測試 20 至 120")
+            with c_opt3:
+                opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
+
+        if st.button("⚡ 開始執行 2D 矩陣尋優運算", key="btn_run_generic_grid"):
+            with st.spinner("正在極速運算排列組合之收益矩陣..."):
+                if "SMA 雙均線" in opt_strategy:
+                    heatmap_df, flat_df, best_p = GridOptimizer.run_ma_grid(
+                        df_target, fast_range=(5, 31, fast_step), slow_range=(30, 121, slow_step),
+                        timeframe=opt_tf, initial_capital=initial_capital, monthly_inflow=monthly_inflow,
                         cost_struct=cost_struct
                     )
+                    x_lbl, y_lbl = "快線週期 (Fast Period)", "慢線週期 (Slow Period)"
+                    rev_y = True
 
-                # 結果卡片
+                elif "MACD" in opt_strategy:
+                    heatmap_df, flat_df, best_p = GridOptimizer.run_macd_grid(
+                        df_target, fast_range=(5, 21, fast_step), slow_range=(20, 61, slow_step),
+                        timeframe=opt_tf, initial_capital=initial_capital, monthly_inflow=monthly_inflow,
+                        cost_struct=cost_struct
+                    )
+                    x_lbl, y_lbl = "EMA 快線週期", "EMA 慢線週期"
+                    rev_y = True
+
+                elif "RSI" in opt_strategy:
+                    heatmap_df, flat_df, best_p = GridOptimizer.run_rsi_grid(
+                        df_target, period=rsi_p, buy_range=(15, 41, step_val), sell_range=(60, 86, step_val),
+                        timeframe=opt_tf, initial_capital=initial_capital, monthly_inflow=monthly_inflow,
+                        cost_struct=cost_struct
+                    )
+                    x_lbl, y_lbl = "超賣買入門檻 (RSI)", "超買賣部門檻 (RSI)"
+                    rev_y = False
+
+                elif "KD" in opt_strategy:
+                    heatmap_df, flat_df, best_p = GridOptimizer.run_kd_grid(
+                        df_target, period=kd_p, buy_range=(15, 36, step_val), sell_range=(65, 86, step_val),
+                        timeframe=opt_tf, initial_capital=initial_capital, monthly_inflow=monthly_inflow,
+                        cost_struct=cost_struct
+                    )
+                    x_lbl, y_lbl = "超賣買入門檻 (K值)", "超買賣部門檻 (K值)"
+                    rev_y = False
+
+                elif "跌破均線" in opt_strategy:
+                    heatmap_df, flat_df, best_p = GridOptimizer.run_dip_grid(
+                        df_target, sma_range=(20, 121, sma_step), interval_range=(1, 11, 1),
+                        buy_amount=dip_amt, timeframe=opt_tf, initial_capital=initial_capital,
+                        monthly_inflow=monthly_inflow, cost_struct=cost_struct
+                    )
+                    x_lbl, y_lbl = "基準均線週期 (SMA)", "加碼冷卻天數 (Days)"
+                    rev_y = False
+
+            if not flat_df.empty:
+                param_cols = [c for c in flat_df.columns if c.startswith("參數")]
+                best_info = " / ".join([f"{col}: {best_p.get(col)}" for col in param_cols])
                 st.success(
-                    f"🎉 **尋優運算完成！** 歷史獲利冠軍參數：**快線 {best_param.get('快線')} 週期 / 慢線 {best_param.get('慢線')} 週期**，"
-                    f"總報酬率達 **{best_param.get('總報酬率 (%)'):+.2f}%**（累計交易 {best_param.get('交易次數')} 次）！"
+                    f"🎉 **尋優運算完成！** 歷史最佳參數組合：**{best_info}**，"
+                    f"總報酬率達 **{best_p.get('總報酬率 (%)'):+.2f}%**（實賺 {curr_symbol} {best_p.get('實賺獲利金額'):,.0f}，累計交易 {best_p.get('交易次數')} 次）！"
                 )
-                
-                st.caption("📊 下圖 X 軸為快線週期、Y 軸為慢線週期；顏色越綠代表報酬率越高，灰色/暗色為平盤，紅色為虧損：")
-                render_parameter_heatmap(heatmap_matrix, curr_symbol)
 
-                csv_grid = flat_results.to_csv(index=False, encoding="utf-8-sig")
+                st.caption(f"📊 熱力圖（X軸：{x_lbl}，Y軸：{y_lbl}）：顏色越綠代表總報酬率越高")
+                render_parameter_heatmap(heatmap_df, curr_symbol, x_title=x_lbl, y_title=y_lbl, reverse_y=rev_y)
+
+                csv_grid = flat_df.to_csv(index=False, encoding="utf-8-sig")
                 st.download_button(
-                    label="📥 下載快慢線尋優排列表 (CSV)",
+                    label=f"📥 下載【{opt_strategy.split(' ')[0]}】尋優完整排列表 (CSV)",
                     data=csv_grid,
-                    file_name=f"{target_ticker}_MA_grid_search_results.csv",
+                    file_name=f"{target_ticker}_{opt_strategy.split(' ')[0]}_grid_results.csv",
                     mime="text/csv",
-                    key="btn_download_grid"
+                    key="btn_download_generic_grid"
                 )
