@@ -1,4 +1,7 @@
-"""分頁 2：多資產配置與定期再平衡模式 (Multi-Asset Allocation & Rebalancing)。"""
+"""
+分頁 2：多資產配置與定期再平衡模式
+已加入自適應簽名防呆，相容所有版本的呼叫。
+"""
 from typing import Dict, Optional
 import streamlit as st
 import pandas as pd
@@ -13,14 +16,24 @@ from ui.theme import render_metric_card
 
 def render_portfolio_rebalance_tab(
     aligned_panel: pd.DataFrame,
-    curr_symbol: str,
-    effective_start_date: str,
-    initial_capital: float,
-    monthly_inflow: float,
-    cost_override: Optional[AssetCostStructure] = None
+    curr_symbol: str = "NT$",
+    effective_start_date: Optional[str] = None,
+    initial_capital: float = 300000.0,
+    monthly_inflow: float = 30000.0,
+    cost_override: Optional[AssetCostStructure] = None,
+    **kwargs
 ):
+    """
+    多資產配置視圖 (具備 **kwargs 防呆)。
+    """
+    if effective_start_date is None:
+        effective_start_date = kwargs.get("effective_start_date", kwargs.get("s_date", ""))
+
     st.header("💼 多資產權重配置與定期再平衡")
-    st.caption(f"以統一幣別 ({curr_symbol}) 進行跨市場配置，回測區間自 {effective_start_date} 開始。")
+    sub_title = f"以統一幣別 ({curr_symbol}) 進行跨市場配置"
+    if effective_start_date:
+        sub_title += f"，實際回測起點：{effective_start_date}。"
+    st.caption(sub_title)
 
     if aligned_panel.empty:
         st.info("👈 請在側邊欄選擇至少兩個標的。")
