@@ -49,6 +49,11 @@ class PortfolioOptimizer:
         port_vols = np.sqrt(np.sum(np.dot(weights_matrix, cov_matrix) * weights_matrix, axis=1))
         sharpe_ratios = (port_returns - risk_free_rate) / np.where(port_vols == 0, np.nan, port_vols)
 
+        # 🛡️ 防呆：若所有夏普比率均為 NaN 或波動度全為 0 (如常數行情或停牌)
+        if np.all(np.isnan(sharpe_ratios)) or np.all(port_vols == 0):
+            eq_w = {tickers[i]: round(100.0 / n_assets, 1) for i in range(n_assets)}
+            return eq_w, eq_w, eq_w, eq_w, pd.DataFrame(), {}
+
         idx_max_sharpe = int(np.nanargmax(sharpe_ratios))
         idx_min_vol = int(np.nanargmin(port_vols))
 
