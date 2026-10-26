@@ -1,106 +1,94 @@
 """
-快慢線網格尋優與參數高原分析模組 (Grid Optimizer Module - 完整現金流注資版)
-支援期初本金 + 每月定投注資，快速計算 Fast MA (5~30) × Slow MA (30~120) 2D 矩陣。
+現代投資組合理論最佳化模組 (Portfolio Optimizer Module - MPT)
+採用純 NumPy 向量化蒙地卡羅模擬 (5,000次抽樣)，免安裝額外套件。
 """
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, List, Any, Tuple
 import pandas as pd
 import numpy as np
-from core.indicators import IndicatorEngine
-from core.cost_model import CostModel, AssetCostStructure
 
 
-class GridOptimizer:
-    """向量化矩陣尋優器。"""
+class PortfolioOptimizer:
+    """MPT 現代投資組合最佳化器。"""
 
     @classmethod
-    def run_ma_grid(
+    def optimize_portfolio(
         cls,
-        df: pd.DataFrame,
-        fast_range: Tuple[int, int, int] = (5, 31, 2),
-        slow_range: Tuple[int, int, int] = (30, 121, 5),
-        timeframe: str = "日線 (Daily)",
-        initial_capital: float = 300000.0,
-        monthly_inflow: float = 0.0,
-        cost_struct: Optional[AssetCostStructure] = None,
-        to_target_fx: float = 1.0
-    ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
-        if cost_struct is None:
-            cost_struct = AssetCostStructure(0.00071, 0.003, 0.0003)
+        aligned_panel: pd.DataFrame,
+        risk_free_rate: float = 0.015,
+        num_simulations: int = 5000
+    ) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, float], Dict[str, float], pd.DataFrame, Dict[str, Any]]:
+        if isinstance(aligned_panel.columns, pd.MultiIndex):
+            tickers = list(dict.fromkeys(aligned_panel.columns.get_level_values(0)))
+        else:
+            tickers = []
 
-        col_c = "adj_close" if "adj_close" in df.columns else "close"
-        close_p = df[col_c].values
-        open_p = df["open"].values
-        n_days = len(df)
+        if len(tickers) < 2:
+            return {}, {}, {}, {}, pd.DataFrame(), {}
 
-        s_months = pd.Series(df.index.to_period("M"), index=df.index)
-        month_changed = (s_months != s_months.shift(1)).values
+        returns_dict = {}
+        for t in tickers:
+            col = "adj_close" if (t, "adj_close") in aligned_panel.columns else "close"
+            price_s = pd.to_numeric(aligned_panel[(t, col)], errors="coerce").ffill().bfill()
+            returns_dict[t] = price_s.pct_change().dropna()
 
-        fast_vals = list(range(fast_range[0], fast_range[1], fast_range[2]))
-        slow_vals = list(range(slow_range[0], slow_range[1], slow_range[2]))
+        returns_df = pd.DataFrame(returns_dict).dropna()
+        if len(returns_df) < 10:
+            eq_w = {t: round(100.0 / len(tickers), 1) for t in tickers}
+            return eq_w, eq_w, eq_w, eq_w, pd.DataFrame(), {}
 
-        fast_mas = {p: IndicatorEngine.calculate_ma(df, p, timeframe).values for p in fast_vals}
-        slow_mas = {p: IndicatorEngine.calculate_ma(df, p, timeframe).values for p in slow_vals}
+        n_assets = len(tickers)
+        mean_daily_returns = returns_df.mean().values
+        cov_matrix = returns_df.cov().values * 252.0
 
-        records = []
-        matrix_dict = {s: {} for s in slow_vals}
+        annual_mean_returns = mean_daily_returns * 252.0
 
-        fee = cost_struct.fee_rate
-        tax = cost_struct.tax_rate
-        slip = cost_struct.slippage_rate
+        np.random.seed(42)
+        weights_matrix = np.random.dirichlet(np.ones(n_assets), size=num_simulations)
 
-        for slow_p in slow_vals:
-            slow_arr = slow_mas[slow_p]
-            for fast_p in fast_vals:
-                if fast_p >= slow_p:
-                    matrix_dict[slow_p][fast_p] = np.nan
-                    continue
+        port_returns = np.dot(weights_matrix, annual_mean_returns)
+        port_vols = np.sqrt(np.sum(np.dot(weights_matrix, cov_matrix) * weights_matrix, axis=1))
+        sharpe_ratios = (port_returns - risk_free_rate) / np.where(port_vols == 0, np.nan, port_vols)
 
-                fast_arr = fast_mas[fast_p]
-                sig = (fast_arr > slow_arr).astype(int)
-                pos = np.roll(sig, 1)
-                pos[0] = 0
+        idx_max_sharpe = int(np.nanargmax(sharpe_ratios))
+        idx_min_vol = int(np.nanargmin(port_vols))
 
-                cash = float(initial_capital)
-                shares = 0.0
-                trades = 0
-                cum_invested = float(initial_capital)
+        def normalize_weights_dict(raw_w: np.ndarray) -> Dict[str, float]:
+            pcts = np.round(raw_w * 100.0, 1)
+            diff = round(100.0 - float(np.sum(pcts)), 1)
+            max_idx = int(np.argmax(pcts))
+            pcts[max_idx] += diff
+            return {tickers[i]: float(pcts[i]) for i in range(n_assets)}
 
-                for i in range(n_days):
-                    if i > 0 and month_changed[i]:
-                        cash += monthly_inflow
-                        cum_invested += monthly_inflow
+        max_sharpe_weights = normalize_weights_dict(weights_matrix[idx_max_sharpe])
+        min_vol_weights = normalize_weights_dict(weights_matrix[idx_min_vol])
 
-                    p_curr = pos[i]
-                    p_prev = pos[i - 1] if i > 0 else 0
-                    op = open_p[i]
+        asset_vols = returns_df.std().values * np.sqrt(252.0)
+        inv_vols = 1.0 / np.where(asset_vols == 0, 1e-6, asset_vols)
+        rp_weights_raw = inv_vols / np.sum(inv_vols)
+        risk_parity_weights = normalize_weights_dict(rp_weights_raw)
 
-                    if p_curr == 1 and (p_prev == 0 or cash > 10.0):
-                        if cash > 10.0:
-                            fill_p = op * (1.0 + slip) * (1.0 + fee) * to_target_fx
-                            shares += cash / fill_p
-                            cash = 0.0
-                            trades += 1
-                    elif p_curr == 0 and p_prev == 1 and shares > 0:
-                        net_p = op * (1.0 - slip) * (1.0 - fee) * (1.0 - tax) * to_target_fx
-                        cash += shares * net_p
-                        shares = 0.0
-                        trades += 1
+        eq_weights = normalize_weights_dict(np.ones(n_assets) / n_assets)
 
-                final_val = cash + shares * close_p[-1] * to_target_fx
-                net_profit = final_val - cum_invested
-                roi = (net_profit / cum_invested) if cum_invested > 0 else 0.0
+        sample_size = min(2000, num_simulations)
+        sample_indices = np.random.choice(num_simulations, size=sample_size, replace=False)
 
-                matrix_dict[slow_p][fast_p] = round(roi * 100.0, 2)
-                records.append({
-                    "快線": fast_p,
-                    "慢線": slow_p,
-                    "實賺獲利金額": round(net_profit, 0),
-                    "總報酬率 (%)": round(roi * 100.0, 2),
-                    "交易次數": trades
-                })
+        frontier_df = pd.DataFrame({
+            "volatility": port_vols[sample_indices] * 100.0,
+            "return": port_returns[sample_indices] * 100.0,
+            "sharpe": sharpe_ratios[sample_indices]
+        })
 
-        heatmap_df = pd.DataFrame(matrix_dict).T
-        flat_df = pd.DataFrame(records).sort_values(by="總報酬率 (%)", ascending=False).reset_index(drop=True)
-        best_params = flat_df.iloc[0].to_dict() if not flat_df.empty else {}
+        summary_stats = {
+            "max_sharpe": {
+                "return": port_returns[idx_max_sharpe],
+                "volatility": port_vols[idx_max_sharpe],
+                "sharpe": sharpe_ratios[idx_max_sharpe]
+            },
+            "min_vol": {
+                "return": port_returns[idx_min_vol],
+                "volatility": port_vols[idx_min_vol],
+                "sharpe": sharpe_ratios[idx_min_vol]
+            }
+        }
 
-        return heatmap_df, flat_df, best_params
+        return max_sharpe_weights, min_vol_weights, risk_parity_weights, eq_weights, frontier_df, summary_stats
