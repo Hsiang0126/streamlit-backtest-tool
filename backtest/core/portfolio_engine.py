@@ -1,11 +1,9 @@
 """
-核心回測引擎 (Portfolio & Strategy Engine - 零 KeyError 極致防呆版)
-徹底修正：
-1. 幣別判斷極致防呆 (智慧代碼偵測 Fallback)，徹底根除 aligned_panel[(t, "quote_currency")] 的 KeyError。
-2. 撮合成交嚴格使用真實開盤價 (open)，杜絕誤用除息還原價導致股數虛增。
-3. 每日精準追蹤 trade_count 序列，完美支援 DCA/Dip DCA 逐筆購買歷史。
-4. 門檻偏差再平衡 (Tolerance Band Rebalancing)，自動略過微小調倉並統計節省摩擦手續費。
-5. 跨市場休市調倉之 Partial Fill 掛單追蹤，徹底杜絕資金閒置死鎖。
+核心回測引擎 (Portfolio & Strategy Engine - 支援現金活存儲備與零前瞻偏差)
+包含：
+1. 單標的策略執行引擎 (Timing / DCA / Dip DCA)
+2. 多資產動態再平衡引擎 (支援現金活存計息儲備、門檻再平衡 Tolerance Band、休市順延撮合)
+3. 幣別與換匯智慧判定 (Native Currency 隔離)
 """
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
@@ -322,7 +320,7 @@ class BacktestEngine:
         return res
 
     # -------------------------------------------------------------
-    # 模式 B：多資產配置與動態再平衡 (零 KeyError 智能幣別版)
+    # 模式 B：多資產配置與動態再平衡 (含現金活存儲備方案 B)
     # -------------------------------------------------------------
     @classmethod
     def run_multi_asset_portfolio(
@@ -335,17 +333,22 @@ class BacktestEngine:
         rebalance_freq: str = "每季再平衡 (Quarterly)",
         cost_dict: Optional[Dict[str, AssetCostStructure]] = None,
         target_currency: str = "TWD",
-        tolerance_band: float = 0.05
+        tolerance_band: float = 0.05,
+        cash_reserve_weight: float = 0.0,
+        cash_annual_rate: float = 0.018
     ) -> Tuple[pd.DataFrame, Dict[str, Dict[str, float]], Dict[str, Any]]:
         tickers = list(target_weights.keys())
-        tot_w = sum(target_weights.values())
+        tot_w = sum(target_weights.values()) + cash_reserve_weight
+        if tot_w <= 0:
+            tot_w = 1.0
         norm_weights = {t: target_weights[t] / tot_w for t in tickers}
+        norm_cash_w = cash_reserve_weight / tot_w
         target_curr_code = "TWD" if "TWD" in target_currency.upper() else "USD"
 
         if cost_dict is None:
             cost_dict = {t: CostModel.get_default_costs(t) for t in tickers}
 
-        # 迴圈外安全判定每檔標的的計價幣別，杜絕 KeyError
+        # 迴圈外安全判定每檔標的的計價幣別
         ticker_currencies = {}
         for t in tickers:
             curr = None
@@ -387,10 +390,18 @@ class BacktestEngine:
         asset_cum_bought = {t: 0.0 for t in tickers}
         asset_cum_sold = {t: 0.0 for t in tickers}
         asset_cum_div = {t: 0.0 for t in tickers}
+        cum_cash_interest = 0.0
 
         history_rows = []
 
         for i, dt in enumerate(data_idx):
+            # 💵 每日現金活存複利計息 (方案 B 核心)
+            daily_interest = 0.0
+            if cash > 0 and cash_annual_rate > 0:
+                daily_interest = cash * (cash_annual_rate / 365.0)
+                cash += daily_interest
+                cum_cash_interest += daily_interest
+
             fx = float(aligned_fx.iloc[i])
             to_target_fx = {
                 t: (fx if ticker_currencies[t] == "USD" and target_curr_code == "TWD"
@@ -418,21 +429,27 @@ class BacktestEngine:
             is_rebal = bool(rebalance_mask.iloc[i]) if i > 0 else False
 
             if is_initial:
+                deploy_pool = cash
                 for t in tickers:
-                    alloc_amt = cash * norm_weights[t]
+                    alloc_amt = deploy_pool * norm_weights[t]
                     if alloc_amt > 10.0:
                         cost = cost_dict[t]
                         fill_p = CostModel.calculate_buy_fill(open_prices_native[t], cost.fee_rate, cost.slippage_rate) * to_target_fx[t]
                         bought_s = alloc_amt / fill_p
                         shares[t] += bought_s
+                        cash -= alloc_amt
                         asset_cum_bought[t] += alloc_amt
                         trade_count += 1
-                cash = 0.0
 
             elif is_rebal:
                 pre_rebal_val = cash + sum(shares[t] * open_prices_native[t] * to_target_fx[t] for t in tickers)
                 curr_weights = {t: (shares[t] * open_prices_native[t] * to_target_fx[t]) / pre_rebal_val if pre_rebal_val > 0 else 0.0 for t in tickers}
-                max_dev = max([abs(curr_weights[t] - norm_weights[t]) for t in tickers]) if pre_rebal_val > 0 else 0.0
+                curr_cash_w = cash / pre_rebal_val if pre_rebal_val > 0 else 0.0
+
+                deviations = [abs(curr_weights[t] - norm_weights[t]) for t in tickers]
+                if norm_cash_w > 0:
+                    deviations.append(abs(curr_cash_w - norm_cash_w))
+                max_dev = max(deviations) if pre_rebal_val > 0 else 0.0
 
                 if max_dev > tolerance_band:
                     for t in tickers:
@@ -469,8 +486,6 @@ class BacktestEngine:
                         cash -= actual_buy_target
                         asset_cum_bought[t] += actual_buy_target
                         trade_count += 1
-                        
-                        # 🛡️ 修復 Partial Fill：未買滿差額繼續保留，杜絕休市調倉死鎖
                         rem_diff = diff - actual_buy_target
                         if rem_diff <= 50.0:
                             del pending_rebalance_orders[t]
@@ -532,6 +547,19 @@ class BacktestEngine:
                 "cum_dividend": asset_cum_div[t],
                 "net_profit": net_gain,
                 "roi": roi
+            }
+
+        # 💵 若有現金活存部位或產生利息，將現金活存加入利潤歸因
+        if norm_cash_w > 0 or cum_cash_interest > 0:
+            tot_inv_cum = float(res_df["total_invested"].iloc[-1])
+            cash_base_invested = tot_inv_cum * norm_cash_w if norm_cash_w > 0 else cash
+            attribution["💵 現金活存儲備"] = {
+                "final_value": cash,
+                "cum_bought": cash_base_invested,
+                "cum_sold": 0.0,
+                "cum_dividend": cum_cash_interest,
+                "net_profit": cum_cash_interest,
+                "roi": (cum_cash_interest / cash_base_invested) if cash_base_invested > 0 else 0.0
             }
 
         rebal_stats = {
