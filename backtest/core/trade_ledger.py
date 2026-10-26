@@ -17,12 +17,13 @@ class TradeLedger:
         curr_symbol: str = "NT$"
     ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
         """
-        從回測結果中提取每一次「買入扣款」的完整歷史紀錄 (專門支援 DCA、Dip DCA 與定投買入)。
+        從回測結果中提取每一次「買入扣款」的真實歷史紀錄 (專門支援 DCA、Dip DCA 與定投買入)。
         """
         if res_df is None or "trades" not in res_df.columns:
             return pd.DataFrame(), {}
 
         trades_series = res_df["trades"]
+        # 精準找出交易次數有遞增的那一天
         trade_diff = trades_series.diff().fillna(trades_series.iloc[0])
         buy_mask = trade_diff > 0
 
@@ -35,17 +36,21 @@ class TradeLedger:
 
         for idx, (dt, row) in enumerate(sub_df.iterrows()):
             close_p = float(row["close"]) if "close" in row else 1.0
-            stock_val = float(row["stock_value"])
-            curr_shares = stock_val / close_p if close_p > 0 else 0.0
-            bought_shares = max(0.0, curr_shares - prev_shares)
             open_p = float(row["open"]) if "open" in row else close_p
-
-            invested_now = float(row["total_invested"])
+            stock_val = float(row["stock_value"])
             cash_rem = float(row["cash"])
+            invested_now = float(row["total_invested"])
             port_val = float(row["portfolio_value"])
 
+            curr_shares = stock_val / close_p if close_p > 0 else 0.0
+            bought_shares = max(0.0, curr_shares - prev_shares)
+
+            # 防呆：如果當天沒有真實持股市值且本金為 0，代表尚未啟動，略過不顯示
+            if stock_val <= 0 and invested_now <= 0:
+                continue
+
             records.append({
-                "購買序號": f"第 {idx + 1} 次",
+                "購買序號": f"第 {len(records) + 1} 次",
                 "購買日期": pd.Timestamp(dt).strftime("%Y-%m-%d"),
                 "買入價格": f"{curr_symbol} {open_p:,.2f}",
                 "當期持股市值": f"{curr_symbol} {stock_val:,.0f}",
@@ -56,8 +61,9 @@ class TradeLedger:
             prev_shares = curr_shares
 
         df_records = pd.DataFrame(records)
+        if df_records.empty:
+            return pd.DataFrame(), {}
 
-        # 統計資訊
         total_buys = len(records)
         final_stock_val = float(res_df["stock_value"].iloc[-1])
         final_invested = float(res_df["total_invested"].iloc[-1])
