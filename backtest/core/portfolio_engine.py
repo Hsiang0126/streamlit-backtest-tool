@@ -5,6 +5,7 @@
 2. 開市日判定與休市順延：休市日絕不幽靈成交，買賣訂單自動順延至該標的下一個真實開盤日。
 3. 靜默暖機期裁切：策略在含暖機期的全量數據上計算指標，帳本與統計嚴格從 start_date 開始。
 4. 全報酬還原價格撮合：除權息與拆股真實反映，杜絕假停損。
+5. 功能 D 升級：門檻偏差再平衡 (Tolerance Band Rebalancing)，自動略過微小調倉並統計節省摩擦手續費。
 """
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
@@ -309,7 +310,7 @@ class BacktestEngine:
         return res
 
     # -------------------------------------------------------------
-    # 模式 B：多資產配置與動態再平衡 (含休市順延與雙軌換匯)
+    # 模式 B：多資產配置與動態再平衡 (含門檻偏差再平衡與省錢統計)
     # -------------------------------------------------------------
     @classmethod
     def run_multi_asset_portfolio(
@@ -321,8 +322,9 @@ class BacktestEngine:
         monthly_inflow: float,
         rebalance_freq: str = "每季再平衡 (Quarterly)",
         cost_dict: Optional[Dict[str, AssetCostStructure]] = None,
-        target_currency: str = "TWD"
-    ) -> Tuple[pd.DataFrame, Dict[str, Dict[str, float]]]:
+        target_currency: str = "TWD",
+        tolerance_band: float = 0.05
+    ) -> Tuple[pd.DataFrame, Dict[str, Dict[str, float]], Dict[str, Any]]:
         tickers = list(target_weights.keys())
         tot_w = sum(target_weights.values())
         norm_weights = {t: target_weights[t] / tot_w for t in tickers}
@@ -351,6 +353,8 @@ class BacktestEngine:
         cash = float(initial_capital)
         shares = {t: 0.0 for t in tickers}
         trade_count = 0
+        skipped_rebalance_count = 0
+        triggered_rebalance_count = 0
 
         pending_rebalance_orders: Dict[str, float] = {}
         asset_cum_bought = {t: 0.0 for t in tickers}
@@ -400,10 +404,17 @@ class BacktestEngine:
 
             elif is_rebal:
                 pre_rebal_val = cash + sum(shares[t] * open_prices_native[t] * to_target_fx[t] for t in tickers)
-                for t in tickers:
-                    target_val = pre_rebal_val * norm_weights[t]
-                    curr_val = shares[t] * open_prices_native[t] * to_target_fx[t]
-                    pending_rebalance_orders[t] = target_val - curr_val
+                curr_weights = {t: (shares[t] * open_prices_native[t] * to_target_fx[t]) / pre_rebal_val if pre_rebal_val > 0 else 0.0 for t in tickers}
+                max_dev = max([abs(curr_weights[t] - norm_weights[t]) for t in tickers]) if pre_rebal_val > 0 else 0.0
+
+                if max_dev > tolerance_band:
+                    for t in tickers:
+                        target_val = pre_rebal_val * norm_weights[t]
+                        curr_val = shares[t] * open_prices_native[t] * to_target_fx[t]
+                        pending_rebalance_orders[t] = target_val - curr_val
+                    triggered_rebalance_count += 1
+                else:
+                    skipped_rebalance_count += 1
 
             if pending_rebalance_orders:
                 for t in list(pending_rebalance_orders.keys()):
@@ -490,7 +501,12 @@ class BacktestEngine:
                 "roi": roi
             }
 
-        return res_df, attribution
+        rebal_stats = {
+            "觸發調倉次數": triggered_rebalance_count,
+            "成功略過調倉次數": skipped_rebalance_count,
+            "估計省下摩擦手續費": f"{round(skipped_rebalance_count * len(tickers) * 150.0, 0):,.0f}"
+        }
+        return res_df, attribution, rebal_stats
 
     @staticmethod
     def _calc_twr_curve(portfolio_vals: List[float], external_flows: List[float], init_capital: float) -> np.ndarray:
@@ -510,139 +526,3 @@ class BacktestEngine:
             prev_val = val
 
         return np.asarray(equity, dtype=float)
-'''
-
-with open("quant_system/core/portfolio_engine.py", "w", encoding="utf-8") as f:
-    f.write(pe_v2)
-
-# 4. 升級 ui/tab_strategy_pk.py (傳入 fx_series 與 target_currency)
-with open("quant_system/ui/tab_strategy_pk.py", "r", encoding="utf-8") as f:
-    pk_content = f.read()
-
-pk_content = pk_content.replace(
-    "def render_strategy_pk_tab(\n    individual_dict: Dict[str, pd.DataFrame],\n    curr_symbol: str,\n    initial_capital: float,\n    monthly_inflow: float,\n    cost_override: Optional[AssetCostStructure] = None\n):",
-    "def render_strategy_pk_tab(\n    individual_dict: Dict[str, pd.DataFrame],\n    curr_symbol: str,\n    initial_capital: float,\n    monthly_inflow: float,\n    cost_override: Optional[AssetCostStructure] = None,\n    fx_series: Optional[pd.Series] = None,\n    target_currency: str = 'TWD'\n):"
-)
-pk_content = pk_content.replace(
-    """            res_df = BacktestEngine.run_single_strategy(
-                df_target,
-                strat_name,
-                p,
-                initial_capital,
-                monthly_inflow,
-                cost_struct
-            )""",
-    """            res_df = BacktestEngine.run_single_strategy(
-                df_target,
-                strat_name,
-                p,
-                initial_capital,
-                monthly_inflow,
-                cost_struct,
-                fx_series=fx_series,
-                target_currency=target_currency
-            )"""
-)
-
-with open("quant_system/ui/tab_strategy_pk.py", "w", encoding="utf-8") as f:
-    f.write(pk_content)
-
-# 5. 升級 ui/tab_portfolio_rebalance.py (傳入 aligned_fx 與 target_currency)
-with open("quant_system/ui/tab_portfolio_rebalance.py", "r", encoding="utf-8") as f:
-    rebal_content = f.read()
-
-rebal_content = rebal_content.replace(
-    "def render_portfolio_rebalance_tab(\n    aligned_panel: pd.DataFrame,\n    curr_symbol: str,\n    initial_capital: float,\n    monthly_inflow: float,\n    cost_override: Optional[AssetCostStructure] = None\n):",
-    "def render_portfolio_rebalance_tab(\n    aligned_panel: pd.DataFrame,\n    aligned_fx: pd.Series,\n    curr_symbol: str,\n    initial_capital: float,\n    monthly_inflow: float,\n    cost_override: Optional[AssetCostStructure] = None,\n    target_currency: str = 'TWD'\n):"
-)
-rebal_content = rebal_content.replace(
-    """        res_df, attribution = BacktestEngine.run_multi_asset_portfolio(
-            aligned_panel,
-            target_weights,
-            initial_capital,
-            monthly_inflow,
-            rebalance_freq=rebal_freq,
-            cost_dict=cost_dict
-        )""",
-    """        res_df, attribution = BacktestEngine.run_multi_asset_portfolio(
-            aligned_panel,
-            aligned_fx,
-            target_weights,
-            initial_capital,
-            monthly_inflow,
-            rebalance_freq=rebal_freq,
-            cost_dict=cost_dict,
-            target_currency=target_currency
-        )"""
-)
-
-with open("quant_system/ui/tab_portfolio_rebalance.py", "w", encoding="utf-8") as f:
-    f.write(rebal_content)
-
-# 6. 升級 app.py (接收 aligned_fx 並分發給兩大分頁)
-with open("quant_system/app.py", "r", encoding="utf-8") as f:
-    app_content = f.read()
-
-app_content = app_content.replace(
-    """with st.spinner("正在自市場載入歷史行情並進行跨市場對齊與換匯..."):
-    individual_dict, aligned_panel, curr_symbol, warnings = load_market_data(
-        target_symbols,
-        start_date,
-        end_date,
-        user_currency
-    )""",
-    """with st.spinner("正在自市場載入歷史行情並進行跨市場對齊與換匯..."):
-    individual_dict, aligned_panel, aligned_fx, curr_symbol, warnings = load_market_data(
-        target_symbols,
-        start_date,
-        end_date,
-        user_currency
-    )"""
-)
-
-app_content = app_content.replace(
-    """with tab_pk:
-    render_strategy_pk_tab(
-        individual_dict=individual_dict,
-        curr_symbol=curr_symbol,
-        initial_capital=initial_capital,
-        monthly_inflow=monthly_inflow,
-        cost_override=cost_override
-    )
-
-with tab_rebalance:
-    render_portfolio_rebalance_tab(
-        aligned_panel=aligned_panel,
-        curr_symbol=curr_symbol,
-        initial_capital=initial_capital,
-        monthly_inflow=monthly_inflow,
-        cost_override=cost_override
-    )""",
-    """with tab_pk:
-    render_strategy_pk_tab(
-        individual_dict=individual_dict,
-        curr_symbol=curr_symbol,
-        initial_capital=initial_capital,
-        monthly_inflow=monthly_inflow,
-        cost_override=cost_override,
-        fx_series=aligned_fx,
-        target_currency=user_currency
-    )
-
-with tab_rebalance:
-    render_portfolio_rebalance_tab(
-        aligned_panel=aligned_panel,
-        aligned_fx=aligned_fx,
-        curr_symbol=curr_symbol,
-        initial_capital=initial_capital,
-        monthly_inflow=monthly_inflow,
-        cost_override=cost_override,
-        target_currency=user_currency
-    )"""
-)
-
-with open("quant_system/app.py", "w", encoding="utf-8") as f:
-    f.write(app_content)
-
-print("All components (core, ui, app) upgraded and integrated.")
-}}
