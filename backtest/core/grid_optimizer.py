@@ -32,7 +32,6 @@ class GridOptimizer:
         open_p = df["open"].values
         n_days = len(df)
 
-        # 換月判定序列 (支援定投資金注入)
         s_months = pd.Series(df.index.to_period("M"), index=df.index)
         month_changed = (s_months != s_months.shift(1)).values
 
@@ -67,7 +66,6 @@ class GridOptimizer:
                 cum_invested = float(initial_capital)
 
                 for i in range(n_days):
-                    # 每月初注入定投資金，徹底根治期初本金為 0 時無錢下單的錯誤
                     if i > 0 and month_changed[i]:
                         cash += monthly_inflow
                         cum_invested += monthly_inflow
