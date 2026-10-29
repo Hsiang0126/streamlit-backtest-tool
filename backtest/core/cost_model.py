@@ -1,8 +1,9 @@
 """
-成本模型模組 (Cost Model)
+成本模型模組 (Cost Model - 支援台股英文字尾 ETF 與特別股完整版)
 支援台股 (個股與 ETF 差異化稅率)、美股、加密貨幣之手續費、證券交易稅與市場滑價計算。
 """
 from dataclasses import dataclass
+import re
 import numpy as np
 
 
@@ -19,9 +20,11 @@ class CostModel:
     @staticmethod
     def get_default_costs(ticker_symbol: str) -> AssetCostStructure:
         clean = ticker_symbol.strip().upper()
-        is_tw = clean.isdigit() or clean.endswith(".TW") or clean.endswith(".TWO")
+        # 判定是否為台股 (包含純數字與 00631L, 00981A, 2881A 等)
+        is_tw = clean.endswith((".TW", ".TWO")) or bool(re.match(r"^\d{4,5}[A-Z0-9]?$", clean))
         if is_tw:
             symbol_core = clean.split(".")[0]
+            # 台股 ETF (以 00 或 01 開頭) 證交稅為千分之一 (0.1%)
             if symbol_core.startswith("00") or symbol_core.startswith("01"):
                 return AssetCostStructure(fee_rate=0.00071, tax_rate=0.0010, slippage_rate=0.0002)
             else:
