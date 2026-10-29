@@ -1,6 +1,7 @@
 """
-分頁 1：單標的 × 多策略 PK 模式 (Single Asset Multi-Strategy PK - 頂級白話教學與扣款細節版)
+分頁 1：單標的 × 多策略 PK 模式 (Single Asset Multi-Strategy PK - 頂級白話教學與冠軍診斷版)
 包含：
+- 🤖 AI 冠軍策略白話勝出解析 (為什麼它能拿冠軍？多頭吃複利、熊市及時空倉、還是抄底發威？)
 - 💡 新手速查手冊：7 大量化策略性格解密 ＆ 核心指標白話對照 ＆ 扣款撮合細節
 - 完整支援 DCA、Dip DCA 與擇時策略之逐筆成交/購買歷史 (Purchase Ledger) ＋ 📥 下載 CSV
 - K 線進出場標記圖 (TradingView 質感 🟢買入 / 🔴賣出箭頭)
@@ -62,13 +63,6 @@ def render_strategy_pk_tab(
             * 🏹 **RSI 超買超賣**：【低吸高拋派】在市場恐慌超跌時（RSI < 30）逆勢買進撿便宜，在市場貪婪過熱時（RSI > 70）獲利了結。
             * ⚡ **MACD 柱狀圖/交叉**：【動能追隨派】觀察多空力量的消長，快線穿過慢線、動能由負翻正時順勢跟進。
             * 🎯 **KD 隨機指標**：【短線轉折派】擺盪指標經典，在低檔黃金交叉時進場、高檔過熱時離場，適合震盪盤整行情。
-
-            ---
-            #### 📊 核心績效指標白話解密（看懂成績單）
-            * **實賺獲利總額**：扣掉你掏出的自付本金後，口袋裡**真金白銀淨賺的金額**（總資產 - 自付總本金）。
-            * **年化複合成長 (CAGR)**：換算成「每年平均幫你賺幾 %」（如同銀行的年利率概念，方便跨時間長度對比）。
-            * **最大歷史回撤 (MDD)**：回測期間**「從歷史最高點摔到最低點跌了幾 %」**。代表你心臟需要承受的最大痛苦程度。
-            * **勝率 (Win Rate) vs 盈虧比 (Profit Factor)**：勝率代表贏錢筆數佔比；盈虧比代表「平均賺一次賺的錢 ÷ 平均賠一次賠的錢」。只要盈虧比高（大賺小賠），40% 勝率一樣能賺大錢！
             """
         )
 
@@ -193,6 +187,17 @@ def render_strategy_pk_tab(
     champion_mdd = df_results.iloc[0]["_raw_mdd"]
 
     st.subheader(f"🏆 最賺錢策略冠軍：【{champion_name}】")
+
+    # 🤖 AI 冠軍策略白話解析
+    if "DCA" in champion_name and "Dip" not in champion_name:
+        champ_reason = "💰 **大盤多頭紅利發威**：在此回測期間內，該標的呈現強勁長期向上趨勢。定期定額依靠『不輕易下車、享受全程複利』擊敗了頻繁進出的擇時策略！"
+    elif "Dip" in champion_name:
+        champ_reason = "🛒 **低檔抄底效應顯著**：市場經歷了深度回檔與大幅震盪，Dip DCA 逢低加碼成功在低點大量收集便宜籌碼，大幅拉低持股成本！"
+    else:
+        champ_reason = "🛡️ **避險防禦大成功**：擇時策略在空頭或暴跌時及時空倉離場，成功閃避了巨大跌幅（MDD 顯著縮小），在保住本金的基礎上贏得獲利冠軍！"
+
+    st.info(f"**🤖 AI 架構師解析冠軍原因：**\n* {champ_reason}")
+
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         render_metric_card("冠軍實賺獲利金額", f"{curr_symbol} {champion_profit:+,.0f}", "實收淨利潤 (已扣成本)", "positive" if champion_profit >= 0 else "negative")
