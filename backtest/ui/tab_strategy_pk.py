@@ -1,9 +1,10 @@
 """
-分頁 1：單標的 × 多策略 PK 模式 (Single Asset Multi-Strategy PK - 頂級增強版)
+分頁 1：單標的 × 多策略 PK 模式 (Single Asset Multi-Strategy PK - 頂級白話教學增強版)
 包含：
+- 💡 新手速查手冊：7 大量化策略性格解密 ＆ 核心指標白話對照
 - 完整支援 DCA、Dip DCA 與擇時策略之逐筆成交/購買歷史 (Purchase Ledger) ＋ 📥 下載 CSV
 - K 線進出場標記圖 (TradingView 質感 🟢買入 / 🔴賣出箭頭)
-- 功能 C：快慢線 2D 尋優熱力圖 (僅在選取 SMA 雙均線策略時智慧顯示，其餘隱藏)
+- 通用 2D 矩陣尋優熱力圖 (支援 SMA, MACD, RSI, KD, Dip DCA 高原尋優)
 """
 from typing import Dict, Any, Optional
 import streamlit as st
@@ -30,13 +31,39 @@ def render_strategy_pk_tab(
     target_currency: str = "TWD"
 ):
     st.header("⚔️ 單標的 × 多策略獲利 PK 模式")
-    st.caption("評估同一檔資產在不同交易策略下的獲利金額與防禦能力，迅速找出最強量化策略。")
+    st.caption("評估同一檔資產在不同交易策略下的「實賺獲利金額」與「抗跌避險能力」，幫你找出最適合該標的的獲利密碼。")
 
     if not individual_dict:
-        st.info("👈 請在左側側邊欄選擇或輸入標的代碼，並點擊「開始加載市場數據」。")
+        st.info("👈 請在左側側邊欄選擇或輸入標的代碼，並點擊加載市場數據。")
         return
 
-    target_ticker = st.selectbox("選擇要進行多策略 PK 的標的：", list(individual_dict.keys()))
+    # 💡 新手白話教學展開面板
+    with st.expander("💡 第一次使用？點擊展開「3 分鐘量化策略與名詞速查手冊」", expanded=False):
+        st.markdown(
+            """
+            #### 🧠 7 大量化策略性格指南（你適合哪一種？）
+            * 💰 **定期定額 / 買入持有 (DCA)**：【佛系存股派】不管漲跌，時間到就扣款。最省心、消除人性情緒，牛市時能完整吃到市場長期複利。
+            * 🛒 **跌破均線且創新低買入 (Dip DCA)**：【特價掃貨派】平時存錢，只有在價格跌破均線、市場在特價時才分批加碼，平均持股成本通常比無腦 DCA 更低！
+            * 🏄 **價格突破均線買入/跌破賣出**：【順勢騎浪派】只要股價站上均線就買入持有；一旦跌破均線立刻獲利了結或空倉避險，擅長躲避大崩盤。
+            * ⚔️ **SMA 雙均線交叉 (黃金交叉)**：【波段長波派】短期快線向上穿越長期慢線買進、跌破賣出。過濾短線假破線雜訊，專吃大波段趨勢。
+            * 🏹 **RSI 超買超賣**：【低吸高拋派】在市場恐慌超跌時（RSI < 30）逆勢買進撿便宜，在市場貪婪過熱時（RSI > 70）獲利了結。
+            * ⚡ **MACD 柱狀圖/交叉**：【動能追隨派】觀察多空力量的消長，快線穿過慢線、動能由負翻正時順勢跟進。
+            * 🎯 **KD 隨機指標**：【短線轉折派】擺盪指標經典，在低檔黃金交叉時進場、高檔過熱時離場，適合震盪盤整行情。
+
+            ---
+            #### 📊 核心績效指標白話解密（看懂成績單）
+            * **實賺獲利總額**：扣掉你掏出的自付本金後，口袋裡**真金白銀淨賺的金額**。
+            * **年化複合成長 (CAGR)**：換算成「每年平均幫你賺幾 %」（如同銀行的年利率概念，方便跨時間長度對比）。
+            * **最大歷史回撤 (MDD)**：回測期間**「從歷史最高點摔到最低點跌了幾 %」**。代表你心臟需要承受的最大痛苦程度（例如 -20% 代表最慘時帳戶曾蒸發兩成）。
+            * **勝率 (Win Rate) vs 盈虧比 (Profit Factor)**：勝率代表贏錢筆數佔比；盈虧比代表「平均賺一次賺的錢 ÷ 平均賠一次賠的錢」。做量化不一定要 80% 高勝率，只要盈虧比高（大賺小賠），40% 勝率一樣能賺大錢！
+            """
+        )
+
+    target_ticker = st.selectbox(
+        "選擇要進行多策略 PK 的標的：",
+        list(individual_dict.keys()),
+        help="選擇你想檢驗的單一資產，系統會讓多種策略同時在這檔標的歷史走勢上對決。"
+    )
     df_target = individual_dict[target_ticker]
 
     all_strategies = StrategyRegistry.list_names()
@@ -50,14 +77,15 @@ def render_strategy_pk_tab(
     selected_strats = st.multiselect(
         "勾選要進行對決的策略 (可多選)：",
         options=all_strategies,
-        default=valid_defaults if valid_defaults else all_strategies[:2]
+        default=valid_defaults if valid_defaults else all_strategies[:2],
+        help="勾選你想同台 PK 的策略，下方會自動輸出排行榜與成長曲線對比。"
     )
 
     if not selected_strats:
         st.warning("請至少勾選一種策略進行評估。")
         return
 
-    with st.expander("⚙️ 展開設定選取策略之參數 (含日線/週線切換)", expanded=False):
+    with st.expander("⚙️ 展開微調選取策略之參數 (含計算週期與敏感度)", expanded=False):
         strategy_params_dict = {}
         for strat_name in selected_strats:
             strat_cls = StrategyRegistry.get(strat_name)
@@ -154,13 +182,13 @@ def render_strategy_pk_tab(
     st.subheader(f"🏆 最賺錢策略冠軍：【{champion_name}】")
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        render_metric_card("冠軍實賺獲利金額", f"{curr_symbol} {champion_profit:+,.0f}", "實收淨利潤", "positive" if champion_profit >= 0 else "negative")
+        render_metric_card("冠軍實賺獲利金額", f"{curr_symbol} {champion_profit:+,.0f}", "實收淨利潤 (已扣成本)", "positive" if champion_profit >= 0 else "negative")
     with c2:
-        render_metric_card("冠軍最終總資產", f"{curr_symbol} {champion_final:,.0f}", "帳戶期末總值", "neutral")
+        render_metric_card("冠軍最終總資產", f"{curr_symbol} {champion_final:,.0f}", "期末帳戶總值", "neutral")
     with c3:
         render_metric_card("冠軍總報酬率", f"{df_results.iloc[0]['_raw_roi']:+.2%}", "基於累積自付本金", "positive" if champion_profit >= 0 else "negative")
     with c4:
-        render_metric_card("冠軍最大歷史回撤", f"{champion_mdd:.2%}", "策略承受的最大跌幅", "negative" if champion_mdd < -0.2 else "neutral")
+        render_metric_card("冠軍最大歷史回撤 (MDD)", f"{champion_mdd:.2%}", "策略承受的最大跌幅痛苦", "negative" if champion_mdd < -0.2 else "neutral")
 
     st.subheader("📋 策略對抗排列表")
     display_cols = [
@@ -172,6 +200,7 @@ def render_strategy_pk_tab(
     st.dataframe(display_df.set_index("策略名稱"), use_container_width=True)
 
     st.subheader("📈 策略資產成長曲線對比 ($)")
+    st.caption("觀察各策略在不同歷史時期的資產累積速度。虛線代表你總共掏出來的自付本金。")
     fig = go.Figure()
     for strat_name in selected_strats:
         if strat_name in equity_curves:
@@ -207,7 +236,12 @@ def render_strategy_pk_tab(
 
     # 逐筆成交 / 扣款購買歷史帳本
     st.subheader("📖 策略成交明細帳本 (Trade / Purchase Log)")
-    inspect_strat = st.selectbox("選擇要檢視詳細交易/購買紀錄的策略：", selected_strats, key="select_inspect_strat")
+    inspect_strat = st.selectbox(
+        "選擇要檢視詳細交易/購買紀錄的策略：",
+        selected_strats,
+        key="select_inspect_strat",
+        help="定投策略會顯示逐筆扣款紀錄；擇時買賣策略會顯示每筆進出場勝率與持倉天數。"
+    )
 
     if inspect_strat in equity_curves:
         res_curve = equity_curves[inspect_strat]
@@ -250,7 +284,7 @@ def render_strategy_pk_tab(
             with m_c1:
                 render_metric_card("策略勝率 (Win Rate)", summary["勝率"], f"獲利 {summary['獲利筆數']} 筆 / 虧損 {summary['虧損筆數']} 筆", "positive" if summary["_raw_win_rate"] >= 0.5 else "negative")
             with m_c2:
-                render_metric_card("盈虧比 (Profit Factor)", summary["盈虧比 (Profit Factor)"], "總賺 / 總賠金額比值", "positive" if summary["_raw_pf"] >= 1.5 else "neutral")
+                render_metric_card("盈虧比 (Profit Factor)", summary["盈虧比 (Profit Factor)"], "總賺金額 ÷ 總賠金額", "positive" if summary["_raw_pf"] >= 1.5 else "neutral")
             with m_c3:
                 render_metric_card("平均持倉天數", summary["平均持倉天數"], "每筆單平均抱單時間", "neutral")
             with m_c4:
@@ -270,17 +304,17 @@ def render_strategy_pk_tab(
                     key="btn_download_trades"
                 )
 
-         # 通用型 2D 矩陣尋優面板 (支援 SMA, MACD, RSI, KD, Dip DCA)
+    # 通用型 2D 矩陣尋優面板 (支援 SMA, MACD, RSI, KD, Dip DCA)
     st.markdown("---")
-    st.subheader("🔥 策略深度尋優：2D 矩陣熱力圖 (尋找穩健參數高原)")
+    st.subheader("🔥 策略深度尋優：2D 參數矩陣熱力圖 (尋找穩健參數高原)")
     st.caption("自動測試雙變數的所有排列組合，以顏色深淺呈現獲利空間，避開過度擬合的「孤島陷阱」。")
 
     with st.expander("🚀 點擊展開「通用 2D 參數高原尋優」控制台", expanded=False):
         st.info(
             """
             🧭 **量化熱力圖判讀守則：**
-            * 🟢 **參數高原（推薦採用）**：最佳參數周遭同樣是一大片綠色，代表策略具備高容錯率與穩健生命力。
-            * 🔴 **孤島陷阱（嚴禁採用）**：僅單一綠點獲利高，周圍全是一片暗紅或虧損，代表純屬歷史雜訊巧合，實盤必死。
+            * 🟢 **參數高原（推薦採用）**：最佳參數周遭同樣是一大片綠色，代表即便市場節奏微變，策略依然具備高容錯率與穩健獲利能力。
+            * 🔴 **孤島陷阱（嚴禁採用）**：僅單一綠點獲利極高，但周圍全是一片暗紅或虧損，代表純屬歷史雜訊巧合，實盤極易失效。
             """
         )
 
@@ -300,17 +334,17 @@ def render_strategy_pk_tab(
 
         if "SMA 雙均線" in opt_strategy:
             with c_opt1:
-                fast_step = st.selectbox("快線步長 (Step)", [1, 2, 3], index=1, help="測試 5, 7, 9 ... 29")
+                fast_step = st.selectbox("快線步長 (Step)", [1, 2, 3], index=1, help="測試 5, 7, 9 ... 29 週期")
             with c_opt2:
-                slow_step = st.selectbox("慢線步長 (Step)", [2, 5, 10], index=1, help="測試 30, 35, 40 ... 120")
+                slow_step = st.selectbox("慢線步長 (Step)", [2, 5, 10], index=1, help="測試 30, 35, 40 ... 120 週期")
             with c_opt3:
                 opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
 
         elif "MACD" in opt_strategy:
             with c_opt1:
-                fast_step = st.selectbox("快線 EMA 步長", [1, 2], index=0, help="測試 5 至 20")
+                fast_step = st.selectbox("快線 EMA 步長", [1, 2], index=0, help="測試 5 至 20 週期")
             with c_opt2:
-                slow_step = st.selectbox("慢線 EMA 步長", [1, 2, 5], index=1, help="測試 20 至 60")
+                slow_step = st.selectbox("慢線 EMA 步長", [1, 2, 5], index=1, help="測試 20 至 60 週期")
             with c_opt3:
                 opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
 
@@ -318,7 +352,7 @@ def render_strategy_pk_tab(
             with c_opt1:
                 rsi_p = st.number_input("RSI 基準週期", value=14, min_value=5, max_value=30, step=1)
             with c_opt2:
-                step_val = st.selectbox("門檻掃描步長", [1, 2, 5], index=1, help="超賣(15~40) 與 超買(60~85)")
+                step_val = st.selectbox("門檻掃描步長", [1, 2, 5], index=1, help="測試超賣(15~40) 與 超買(60~85)")
             with c_opt3:
                 opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
 
@@ -326,7 +360,7 @@ def render_strategy_pk_tab(
             with c_opt1:
                 kd_p = st.number_input("KD 基準週期", value=9, min_value=3, max_value=20, step=1)
             with c_opt2:
-                step_val = st.selectbox("K值掃描步長", [1, 2, 5], index=1, help="買入K(15~35) 與 賣出K(65~85)")
+                step_val = st.selectbox("K值掃描步長", [1, 2, 5], index=1, help="測試買入K(15~35) 與 賣出K(65~85)")
             with c_opt3:
                 opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
 
@@ -334,7 +368,7 @@ def render_strategy_pk_tab(
             with c_opt1:
                 dip_amt = st.number_input("每次加碼買入金額", value=50000.0, step=10000.0)
             with c_opt2:
-                sma_step = st.selectbox("均線掃描步長", [5, 10, 20], index=1, help="測試 20 至 120")
+                sma_step = st.selectbox("均線掃描步長", [5, 10, 20], index=1, help="測試均線 20 至 120 週期")
             with c_opt3:
                 opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0)
 
