@@ -146,8 +146,13 @@ class DataEngine:
 
         fx_rates = pd.Series(1.0, index=pd.date_range(warmup_start_ts, end_ts))
         try:
-            if isinstance(raw_data.columns, pd.MultiIndex) and "USDTWD=X" in raw_data.columns.levels[0]:
-                fx_frame = raw_data["USDTWD=X"]
+            if isinstance(raw_data.columns, pd.MultiIndex):
+                if "USDTWD=X" in raw_data.columns.get_level_values(0):
+                    fx_frame = raw_data["USDTWD=X"]
+                elif "USDTWD=X" in raw_data.columns.get_level_values(1):
+                    fx_frame = raw_data.xs("USDTWD=X", axis=1, level=1)
+                else:
+                    fx_frame = raw_data
             else:
                 fx_frame = raw_data
             if "Close" in fx_frame.columns:
@@ -165,16 +170,17 @@ class DataEngine:
             if orig_t == "USDTWD=X":
                 continue
             try:
-                if len(download_list) == 1 and not isinstance(raw_data.columns, pd.MultiIndex):
+                sub_df = None
+                if not isinstance(raw_data.columns, pd.MultiIndex):
                     sub_df = raw_data.copy()
-                elif isinstance(raw_data.columns, pd.MultiIndex):
-                    if fmt_t in raw_data.columns.levels[0]:
+                else:
+                    if fmt_t in raw_data.columns.get_level_values(0):
                         sub_df = raw_data[fmt_t].copy()
+                    elif fmt_t in raw_data.columns.get_level_values(1):
+                        sub_df = raw_data.xs(fmt_t, axis=1, level=1).copy()
                     else:
                         all_warnings.append(f"{orig_t}：無法自回傳資料中找到對應代碼 ({fmt_t})。")
                         continue
-                else:
-                    sub_df = raw_data.copy()
 
                 cleaned, warns = cls.clean_ohlc(sub_df, orig_t)
                 all_warnings.extend(warns)
