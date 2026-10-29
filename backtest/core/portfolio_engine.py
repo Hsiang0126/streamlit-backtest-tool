@@ -1,11 +1,12 @@
 """
-核心回測引擎 (Portfolio & Strategy Engine - 支援現金活存儲備與零前瞻偏差)
+核心回測引擎 (Portfolio & Strategy Engine - 支援台股英文字尾代碼與現金活存儲備版)
 包含：
 1. 單標的策略執行引擎 (Timing / DCA / Dip DCA)
 2. 多資產動態再平衡引擎 (支援現金活存計息儲備、門檻再平衡 Tolerance Band、休市順延撮合)
 3. 幣別與換匯智慧判定 (Native Currency 隔離)
 """
 from typing import Dict, List, Any, Optional, Tuple
+import re
 import pandas as pd
 import numpy as np
 from core.cost_model import CostModel, AssetCostStructure
@@ -348,7 +349,7 @@ class BacktestEngine:
         if cost_dict is None:
             cost_dict = {t: CostModel.get_default_costs(t) for t in tickers}
 
-        # 迴圈外安全判定每檔標的的計價幣別
+        # 迴圈外安全判定每檔標的的計價幣別 (支援台股英文字尾代碼如 00631L, 00981A)
         ticker_currencies = {}
         for t in tickers:
             curr = None
@@ -356,7 +357,7 @@ class BacktestEngine:
                 curr = str(aligned_panel[(t, "quote_currency")].iloc[0]).strip().upper()
             if not curr or curr in {"NAN", "NONE", ""}:
                 clean_t = str(t).strip().upper()
-                if clean_t.isdigit() or clean_t.endswith((".TW", ".TWO")):
+                if clean_t.endswith((".TW", ".TWO")) or bool(re.match(r"^\d{4,5}[A-Z0-9]?$", clean_t)):
                     curr = "TWD"
                 else:
                     curr = "USD"
@@ -395,7 +396,7 @@ class BacktestEngine:
         history_rows = []
 
         for i, dt in enumerate(data_idx):
-            # 💵 每日現金活存複利計息 (方案 B 核心)
+            # 💵 每日現金活存複利計息
             daily_interest = 0.0
             if cash > 0 and cash_annual_rate > 0:
                 daily_interest = cash * (cash_annual_rate / 365.0)
