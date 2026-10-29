@@ -1,59 +1,44 @@
 """
-市場行情與數據對齊引擎 (Data Engine - 5元組完整版)
+市場行情與數據對齊引擎 (Data Engine - 支援台股英文字尾 ETF 與特別股完整版)
 1. 雙軌計價：保留各市場原生報價 (Native Currency)，杜絕匯率污染股價 K 棒與指標。
 2. 開盤日標記 (is_trading_day)：真實反映各市場開閉市，杜絕休市日幽靈成交。
 3. 靜默暖機期 (Warm-up Window)：自動預先抓取 365 天歷史資料，確保第 1 天指標成熟非 NaN。
-4. 還原價格提取 (adj_close)：提供全報酬還原價格供技術指標計算，杜絕除權息假跌破。
+4. 智慧代碼相容：支援純數字 (0050, 2330) 與含英文字尾之台股代碼 (00631L, 00981A, 00679B, 2881A)。
 """
 from typing import List, Dict, Tuple, Optional
+import re
 import yfinance as yf
 import pandas as pd
 import numpy as np
+
 
 class DataEngine:
     """市場行情資料下載、清洗與跨市場真實對齊器。"""
 
     PRESET_OPTIONS = {
-        "美股指數與大盤 ETF": [
-            "QQQ (納斯達克100)", 
-            "SPY (S&P 500)", 
-            "VT (全球全市場股票)", 
-            "VOO (Vanguard S&P 500)", 
-            "IWM (羅素2000中小型股)"
-        ],
-        "美股熱門科技股": [
-            "AAPL (蘋果)", 
-            "NVDA (輝達)", 
-            "TSLA (特斯拉)", 
-            "MSFT (微軟)", 
-            "GOOG (Google)", 
-            "AMZN (亞馬遜)"
-        ],
-        "台股核心標的": [
-            "0050 (元大台灣50)", 
-            "006208 (富邦台50)", 
-            "2330 (台積電)", 
-            "0056 (元大高股息)", 
-            "00878 (國泰永續高股息)", 
-            "2317 (鴻海)"
-        ],
-        "防禦與債券/商品資產": [
-            "TLT (美債20年+)", 
-            "BND (全市場債券)", 
-            "GLD (黃金 ETF)", 
-            "00679B (元大美債20年)"
-        ],
-        "加密貨幣": [
-            "BTC-USD (比特幣)", 
-            "ETH-USD (乙太幣)", 
-            "SOL-USD (索拉納)"
-        ]
+        "美股指數與權值": ["QQQ (納斯達克100)", "AAPL (蘋果)", "NVDA (輝達)", "SPY (S&P 500)", "TSLA (特斯拉)", "MSFT (微軟)"],
+        "台股代表標的": ["0050 (元大台灣50)", "00631L (元大台灣50正2)", "2330 (台積電)", "0056 (元大高股息)", "2317 (鴻海)", "2454 (聯發科)"],
+        "加密貨幣": ["BTC-USD (比特幣)", "ETH-USD (乙太幣)", "SOL-USD (索拉納)", "BNB-USD (幣安幣)"]
     }
 
     @staticmethod
-    def normalize_ticker(ticker: str) -> str:
+    def is_taiwan_ticker(ticker: str) -> bool:
+        """判定是否為台股上市櫃代碼 (包含純數字與帶有英文代號如 00631L, 00981A, 2881A)。"""
+        clean = ticker.strip().upper()
+        if clean.endswith((".TW", ".TWO")):
+            return True
+        # 台灣證券代碼特徵：以數字開頭，總長度為 4~6 碼 (例如 2330, 0050, 00631L, 00981A, 2881A)
+        if re.match(r"^\d{4,5}[A-Z0-9]?$", clean):
+            return True
+        return False
+
+    @classmethod
+    def normalize_ticker(cls, ticker: str) -> str:
+        """將使用者輸入之標的代碼正規化，台股自動補上 .TW 後綴。"""
         t = ticker.strip().upper()
-        if t.isdigit():
+        if t.endswith((".TW", ".TWO")):
+            return t
+        if cls.is_taiwan_ticker(t):
             return f"{t}.TW"
         return t
 
@@ -62,7 +47,7 @@ class DataEngine:
         t = cls.normalize_ticker(ticker)
         if overrides and t in overrides:
             return overrides[t]
-        if t.endswith((".TW", ".TWO")):
+        if t.endswith((".TW", ".TWO")) or cls.is_taiwan_ticker(ticker):
             return "TWD"
         if "-USD" in t or t.endswith("USDT") or t.isalpha():
             return "USD"
@@ -186,7 +171,7 @@ class DataEngine:
                     if fmt_t in raw_data.columns.levels[0]:
                         sub_df = raw_data[fmt_t].copy()
                     else:
-                        all_warnings.append(f"{orig_t}：無法自回傳資料中找到對應代碼。")
+                        all_warnings.append(f"{orig_t}：無法自回傳資料中找到對應代碼 ({fmt_t})。")
                         continue
                 else:
                     sub_df = raw_data.copy()
