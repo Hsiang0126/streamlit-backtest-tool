@@ -1,13 +1,13 @@
 """
-分頁 2：多資產配置與定期再平衡模式 (Multi-Asset Allocation & Rebalancing - 白話教學與扣款細節版)
+分頁 2：多資產配置與定期再平衡模式 (Multi-Asset Allocation & Rebalancing - AI 智能健檢與權重自動平衡版)
 包含：
-- 💡 新手速查手冊：多資產配置、4 大 AI 權重推薦、現金活存儲備、門檻再平衡之白話意義 ＆ 資金池消化細節
+- ⚖️ 一鍵等比補齊剩餘比例至 100% (Auto-Balance Weights)
+- 🤖 AI 投資組合白話健檢總結 (獲利評價、抗跌風險、架構師建議)
+- 💡 新手速查手冊：多資產配置、4 大 AI 權重推薦、現金活存儲備、門檻再平衡之白話意義
 - 💵 方案 B 核心：虛擬現金活存儲備資產 (可自訂年化利率、每日複利計息、參與再平衡)
-- 🧠 MPT 現代投資組合最佳化：一鍵帶入【最高夏普】、【最小波動】、【風險平價】、【等權重】(自動適配現金儲備)
-- 🌈 效率前緣彩虹散佈圖 (Efficient Frontier)
+- 🧠 MPT 現代投資組合最佳化：一鍵帶入【最高夏普】、【最小波動】、【風險平價】、【等權重】
 - 🛡️ 門檻偏差再平衡 (Tolerance Band Rebalancing)，自動略過微小調倉並統計節省手續費
 - 🎯 各資產利潤拆解 (Profit Attribution - 包含現金儲備利息收益)
-- 📥 一鍵下載每日投資組合資產軌跡 (CSV)
 """
 from typing import Dict, Optional
 import streamlit as st
@@ -21,6 +21,34 @@ from core.portfolio_engine import BacktestEngine
 from core.portfolio_optimizer import PortfolioOptimizer
 from ui.theme import render_metric_card
 from ui.components_chart import render_efficient_frontier
+
+
+def generate_portfolio_diagnosis(cagr: float, mdd: float, net_profit: float, rebal_stats: dict, cash_reserve_w: float, curr_symbol: str = "NT$"):
+    """生成 AI 投資組合白話健檢評語。"""
+    if cagr >= 0.20:
+        profit_eval = f"🚀 **超凡爆發力 (年化複利 {cagr:+.1%})**：資產增長速度極快，顯著超越絕大多數傳統基金與大盤指數！"
+    elif cagr >= 0.10:
+        profit_eval = f"💪 **穩健強勁 (年化複利 {cagr:+.1%})**：超越多數定存與通貨膨脹，長期複利效益顯著，非常適合滾雪球累積財富。"
+    elif cagr >= 0.04:
+        profit_eval = f"🛡️ **保守保值 (年化複利 {cagr:+.1%})**：走勢平順溫和，主要著重於資產防禦與抗通膨。"
+    else:
+        profit_eval = f"⚠️ **成長偏緩 (年化複利 {cagr:+.1%})**：年化動能較低，建議適度提高成長型資產比例以增強獲利動能。"
+
+    if mdd > -0.15:
+        risk_eval = f"🌟 **極致抗震 (最大跌幅 {mdd:.1%})**：歷史回撤極小，暴跌時幾乎無感，宛如穩固堡壘，心理壓力極低！"
+    elif mdd > -0.30:
+        risk_eval = f"👌 **中度抗跌 (最大跌幅 {mdd:.1%})**：回撤在合理健康的波動範圍內，多數長期投資人皆能從容承受。"
+    else:
+        risk_eval = f"⚡ **劇烈心跳 (最大跌幅 {mdd:.1%})**：歷史上曾承受過顯著回調，潛在報酬雖高，但必須具備足夠耐心切勿在低點恐慌殺跌！"
+
+    advice_points = []
+    if rebal_stats.get("成功略過調倉次數", 0) > 0:
+        advice_points.append(f"門檻保護已為您省下約 {curr_symbol} {rebal_stats.get('估計省下摩擦手續費', '0')} 元的摩擦磨損")
+    if cash_reserve_w > 0:
+        advice_points.append(f"{cash_reserve_w:.0%} 現金活存儲備成功在回檔時發揮乾柴 (Dry Powder) 與穩定生息效益")
+    
+    advice_text = "；".join(advice_points) if advice_points else "維持紀律定投與定期再平衡是發揮資產配置威力的核心基石。"
+    return profit_eval, risk_eval, advice_text
 
 
 def render_portfolio_rebalance_tab(
@@ -48,7 +76,7 @@ def render_portfolio_rebalance_tab(
         st.warning("多資產配置模式建議至少選擇 2 檔標的（例如：美股 QQQ + 台股 0050）。")
         return
 
-    # 💡 多資產配置新手白話教學面板
+    # 💡 新手白話教學手冊
     with st.expander("💡 第一次使用？點擊展開「3 分鐘多資產配置與資金池運作手冊」", expanded=False):
         st.markdown(
             """
@@ -57,35 +85,18 @@ def render_portfolio_rebalance_tab(
                * **期初本金**：會在回測**第 1 個開市日**，直接按設定比例分配買入各資產。
                * **每月固定新注資**：會在**每個月第 1 個開市日**注入。若「期初本金 = 0」，第 1 個月為開戶期，首筆注資會於**次月首日**開始分配投入。
             2. **領到的現金股利去哪裡了？**：
-               * 標的除息時，股利會換算為新台幣/美元自動存入帳戶的「現金池」。
-               * **股利不會只買回原本標的**，而是等到「下個月定期定額扣款日」或「再平衡日」時，與當月新存入的本金合併，**依照你的目標權重重新分配買入所有資產**！
-            3. **為什麼期末總資產中還會有幾百～幾千元的「剩餘現金」？**
-               * 來源 A：**尾期股息**。回測結束前幾天剛入帳的股息，在結束前還沒迎來下個月的定期定額日，因此保留為現金。
-               * 來源 B：**交易碎屑零頭**。扣除手續費或小於最小下單門檻（10 元）後的微量找零。
-            4. **跨市場休市調倉如何處理？**
-               * 美股開市、台股休市時，若觸發再平衡，系統會記住台股的賣單，次日台股開盤賣出資金到帳後，再自動補足美股買單，絕不產生資金斷鏈死鎖！
+               * 標的除息時，股利會換算為目標幣別存入「現金池」。
+               * **股利不會只買回原本標的**，而是在次月定投扣款或再平衡日時，與新本金合併**依照你的目標權重重新分配買入所有資產**！
+            3. **期末總資產中的「剩餘現金」是什麼？**：
+               * 主要是回測結束前剛入帳、還沒到下個月扣款日的尾期股息，以及扣除手續費後的零星找零（不足 10 元不重複下單）。
+            4. **跨市場休市調倉如何處理？**：
+               * 美股開市、台股休市時，系統會先保留掛單，次日台股開盤賣出資金到帳後自動補齊買單，絕不產生資金斷鏈死鎖！
 
             ---
             #### ⚖️ 什麼是「定期再平衡 (Rebalancing)」？
             假設你的目標是「50% 0050 + 50% QQQ」。一年後因為美股大漲，比例變成了「40% 0050 + 60% QQQ」。
             * **此時執行再平衡**：系統會自動**賣出漲多的 QQQ（高檔停利），並買入落後的 0050（低檔補倉）**，強制讓比例回到 50% : 50%。
             * **核心好處**：克服人性追高殺跌的恐懼，自動落實**「高賣低買」**，在控制風險的同時賺取資產輪動的超額紅利！
-
-            ---
-            #### 🧠 4 大 AI 智慧推薦權重怎麼挑？
-            * 🎯 **最高夏普 (Max Sharpe - 性價比冠軍)**：由 5,000 組隨機組合算出「性價比最高」的黃金比例。用最少的波動代價，換取最大的獲利！
-            * 🛡️ **最小波動 (Min Volatility - 極致防禦)**：找出歷史走勢最平穩、暴跌時跌最少的抗跌組合，適合保守族或退休族。
-            * ⚖️ **風險平價 (Risk Parity - 風險均等)**：波動大的資產（如加密幣）少配、波動小的資產多配，確保每檔資產對總風險的貢獻是一樣的。
-            * 🔄 **等權重 (1/N - 平均分配)**：不預測市場，所有選取標的平均分配。
-
-            ---
-            #### 💵 為什麼要留「現金活存儲備 (Cash Reserve)」？
-            * **暴跌抄底乾柴 (Dry Powder)**：當股市崩盤時，只有現金不會跌。再平衡時系統能從活存提領資金抄底便宜股票！
-            * **被動計息**：每天按設定的年化利率（TWD 1.8%、USD 4.0%）複利計息，波動度為 0 且每天穩定生錢。
-
-            ---
-            #### 🛡️ 什麼是「再平衡偏差容忍度 (Tolerance Band)」？
-            * 每次調倉都要繳手續費與證交稅。如果設定容忍度為 **±5%**，只有當某檔標的偏離目標超過 5% 時才調倉；若只是微小波動則自動略過，幫你**省下大筆無謂的手續費磨損**！
             """
         )
 
@@ -100,7 +111,7 @@ def render_portfolio_rebalance_tab(
 
     st.subheader("1. 設定各資產配置目標比例")
 
-    # 💵 方案 B：現金活存儲備控制區塊
+    # 💵 現金活存儲備控制區塊
     st.markdown("##### 💵 資本市場無風險資產配置 (現金活存儲備)：")
     c_cash1, c_cash2 = st.columns([1, 1])
     with c_cash1:
@@ -125,10 +136,9 @@ def render_portfolio_rebalance_tab(
             help="現金儲備部位每日按此年化利率複利計息 (TWD 建議 1.5%~2.0%，USD 建議 4.0%~5.0%)。"
         )
 
-    st.markdown("##### 🧠 AI 智慧權重推薦 (點擊一鍵自動填入風險資產)：")
-    btn_col1, btn_col2, btn_col3, btn_col4 = st.columns(4)
+    st.markdown("##### 🧠 快捷比例助手 (點擊一鍵自動填入)：")
+    btn_col1, btn_col2, btn_col3, btn_col4, btn_col5 = st.columns(5)
 
-    # 計算留給風險資產的縮放比例 (托賓兩基金分離定理)
     scale_risky = max(0.0, (100.0 - cash_weight_pct) / 100.0)
 
     def apply_ai_weights(raw_w_dict):
@@ -138,24 +148,42 @@ def render_portfolio_rebalance_tab(
         tot_scaled = sum(scaled_w.values())
         diff = round((100.0 - cash_weight_pct) - tot_scaled, 1)
         if tickers:
-            scaled_w[tickers[0]] += diff
+            scaled_w[tickers[0]] = round(scaled_w[tickers[0]] + diff, 1)
         for t in tickers:
             st.session_state[f"weight_input_{t}"] = float(scaled_w.get(t, 0.0))
 
-    if btn_col1.button("🎯 帶入【最高夏普】推薦權重", help="性價比最高，以最少波動換取最大報酬"):
+    if btn_col1.button("🎯【最高夏普】", help="性價比最高，以最少波動換取最大報酬"):
         apply_ai_weights(w_max_sharpe)
         st.rerun()
 
-    if btn_col2.button("🛡️ 帶入【最小波動】推薦權重", help="走勢最平穩、最抗跌的極致防禦組合"):
+    if btn_col2.button("🛡️【最小波動】", help="走勢最平穩、最抗跌的極致防禦組合"):
         apply_ai_weights(w_min_vol)
         st.rerun()
 
-    if btn_col3.button("⚖️ 帶入【風險平價】推薦權重", help="高波動標的權重變小，各資產風險貢獻均等"):
+    if btn_col3.button("⚖️【風險平價】", help="高波動標的權重變小，各資產風險貢獻均等"):
         apply_ai_weights(w_rp)
         st.rerun()
 
-    if btn_col4.button("🔄 重設為【等權重 1/N】", help="所有標的平均分配"):
+    if btn_col4.button("🔄【等權重 1/N】", help="所有標的平均分配"):
         apply_ai_weights(w_eq)
+        st.rerun()
+
+    # ⚖️ 一鍵等比補齊權重功能 (徹底消滅湊不齊 100% 的挫折感)
+    if btn_col5.button("✨【自動補齊 100%】", help="一鍵將目前各標的依比例放大或縮小，剛好湊齊 100%！"):
+        cur_w_map = {t: float(st.session_state.get(f"weight_input_{t}", 0.0)) for t in tickers}
+        cur_sum = sum(cur_w_map.values())
+        target_risky = max(0.0, 100.0 - cash_weight_pct)
+        if cur_sum > 0:
+            scale = target_risky / cur_sum
+            new_w = {t: round(cur_w_map[t] * scale, 1) for t in tickers}
+        else:
+            eq = round(target_risky / len(tickers), 1)
+            new_w = {t: eq for t in tickers}
+        diff = round(target_risky - sum(new_w.values()), 1)
+        if tickers:
+            new_w[tickers[0]] = round(new_w[tickers[0]] + diff, 1)
+        for t in tickers:
+            st.session_state[f"weight_input_{t}"] = float(new_w[t])
         st.rerun()
 
     # 預設各標的初始權重
@@ -177,12 +205,18 @@ def render_portfolio_rebalance_tab(
             )
 
     total_weight = sum(raw_weights.values()) + cash_weight_pct
-    if abs(total_weight - 100.0) > 0.1:
-        st.error(
+    diff_from_100 = round(100.0 - total_weight, 1)
+
+    # 動態權重檢核提示條
+    if abs(diff_from_100) > 0.1:
+        st.warning(
             f"⚠️ 目前設定權重總和為 **{total_weight:.1f}%**"
-            f"（風險資產合計 {sum(raw_weights.values()):.1f}% + 現金活存 {cash_weight_pct:.1f}%），請微調使其剛好等於 100.0%。"
+            f"（風險資產合計 {sum(raw_weights.values()):.1f}% + 現金活存 {cash_weight_pct:.1f}%，差 **{diff_from_100:+.1f}%**）。"
+            f"請點擊上方【✨ 自動補齊 100%】按鈕一鍵配平！"
         )
         return
+    else:
+        st.caption(f"✅ **權重配置完美平衡**：各標的合計 {sum(raw_weights.values()):.1f}% + 現金活存 {cash_weight_pct:.1f}% = 100.0%")
 
     target_weights = {t: raw_weights[t] / 100.0 for t in tickers}
     cash_reserve_w = cash_weight_pct / 100.0
@@ -234,8 +268,20 @@ def render_portfolio_rebalance_tab(
 
         m = PerformanceMetrics.evaluate(res_df, curr_symbol=curr_symbol, initial_capital=initial_capital)
 
-    # 3. 核心指標與省錢成果展示
+    # 3. 核心指標與 AI 白話健檢
     st.subheader("📊 投資組合整體獲利總覽")
+
+    # 🤖 AI 白話健檢卡片
+    p_badge, r_badge, adv_badge = generate_portfolio_diagnosis(
+        m["_raw_cagr"], m["_raw_mdd"], m["_raw_net_profit"], rebal_stats, cash_reserve_w, curr_symbol=curr_symbol
+    )
+    st.info(
+        f"**🤖 AI 架構師健檢白話總評：**\n"
+        f"* {p_badge}\n"
+        f"* {r_badge}\n"
+        f"* 💡 **操作建議**：{adv_badge}"
+    )
+
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     net_gain = m["_raw_net_profit"]
     with kpi1:
