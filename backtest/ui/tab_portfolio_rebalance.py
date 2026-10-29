@@ -1,6 +1,7 @@
 """
-分頁 2：多資產配置與定期再平衡模式 (Multi-Asset Allocation & Rebalancing - 現金活存儲備版)
+分頁 2：多資產配置與定期再平衡模式 (Multi-Asset Allocation & Rebalancing - 白話教學增強版)
 包含：
+- 💡 新手速查手冊：多資產配置、4 大 AI 權重推薦、現金活存儲備、門檻再平衡之白話意義
 - 💵 方案 B 核心：虛擬現金活存儲備資產 (可自訂年化利率、每日複利計息、參與再平衡)
 - 🧠 MPT 現代投資組合最佳化：一鍵帶入【最高夏普】、【最小波動】、【風險平價】、【等權重】(自動適配現金儲備)
 - 🌈 效率前緣彩虹散佈圖 (Efficient Frontier)
@@ -46,6 +47,33 @@ def render_portfolio_rebalance_tab(
     if len(tickers) < 2:
         st.warning("多資產配置模式建議至少選擇 2 檔標的（例如：美股 QQQ + 台股 0050）。")
         return
+
+    # 💡 多資產配置新手白話教學面板
+    with st.expander("💡 第一次使用？點擊展開「3 分鐘多資產配置與再平衡白話手冊」", expanded=False):
+        st.markdown(
+            """
+            #### ⚖️ 什麼是「定期再平衡 (Rebalancing)」？
+            假設你的目標是「50% 0050 + 50% QQQ」。一年後因為美股大漲，比例變成了「40% 0050 + 60% QQQ」。
+            * **此時執行再平衡**：系統會自動**賣出漲多的 QQQ（高檔停利），並買入落後的 0050（低檔補倉）**，強制讓比例回到 50% : 50%。
+            * **核心好處**：克服人性追高殺跌的恐懼，自動落實**「高賣低買」**，在控制風險的同時賺取資產輪動的超額紅利！
+
+            ---
+            #### 🧠 4 大 AI 智慧推薦權重怎麼挑？
+            * 🎯 **最高夏普 (Max Sharpe - 性價比冠軍)**：由 5,000 組隨機組合算出「性價比最高」的黃金比例。用最少的波動代價，換取最大的獲利！
+            * 🛡️ **最小波動 (Min Volatility - 極致防禦)**：找出歷史走勢最平穩、暴跌時跌最少的抗跌組合，適合保守族或退休族。
+            * ⚖️ **風險平價 (Risk Parity - 風險均等)**：波動大的資產（如加密幣）少配、波動小的資產多配，確保每檔資產對總風險的貢獻是一樣的。
+            * 🔄 **等權重 (1/N - 平均分配)**：不預測市場，所有選取標的平均分配。
+
+            ---
+            #### 💵 為什麼要留「現金活存儲備 (Cash Reserve)」？
+            * **暴跌抄底乾柴 (Dry Powder)**：當股市崩盤時，只有現金不會跌。再平衡時系統能從活存提領資金抄底便宜股票！
+            * **被動計息**：每天按設定的年化利率（TWD 1.8%、USD 4.0%）複利計息，波動度為 0 且每天穩定生錢。
+
+            ---
+            #### 🛡️ 什麼是「再平衡偏差容忍度 (Tolerance Band)」？
+            * 每次調倉都要繳手續費與證交稅。如果設定容忍度為 **±5%**，只有當某檔標的偏離目標超過 5% 時才調倉；若只是微小波動則自動略過，幫你**省下大筆無謂的手續費磨損**！
+            """
+        )
 
     # 防呆補齊匯率
     if aligned_fx is None or aligned_fx.empty:
@@ -157,7 +185,8 @@ def render_portfolio_rebalance_tab(
         rebal_freq = st.selectbox(
             "定期再平衡檢驗週期",
             options=["每季再平衡 (Quarterly)", "每半年再平衡 (Semi-Annually)", "每年再平衡 (Annually)", "每月再平衡 (Monthly)", "不進行再平衡 (Buy & Drift)"],
-            index=0
+            index=0,
+            help="設定多久打開帳本檢查一次權重偏離程度。季再平衡 (Quarterly) 或半年再平衡是學術界公認兼顧效益與手續費的最佳平衡點。"
         )
     with c_band:
         tolerance_pct = st.slider(
@@ -196,13 +225,13 @@ def render_portfolio_rebalance_tab(
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     net_gain = m["_raw_net_profit"]
     with kpi1:
-        render_metric_card("實賺獲利總額", f"{curr_symbol} {net_gain:+,.0f}", "真金白銀淨收益", "positive" if net_gain >= 0 else "negative")
+        render_metric_card("實賺獲利總額", f"{curr_symbol} {net_gain:+,.0f}", "真金白銀淨收益 (已扣稅費)", "positive" if net_gain >= 0 else "negative")
     with kpi2:
         render_metric_card("期末總資產價值", f"{curr_symbol} {m['_raw_final']:,.0f}", f"包含現金活存儲備 {curr_symbol} {res_df['cash'].iloc[-1]:,.0f}", "neutral")
     with kpi3:
         render_metric_card("累積自付總本金", f"{curr_symbol} {m['_raw_invested']:,.0f}", f"期初 {curr_symbol} {initial_capital:,.0f} + 定期注資", "neutral")
     with kpi4:
-        render_metric_card("年化複合成長 (CAGR)", f"{m['_raw_cagr']:+.2%}", f"最大回撤 {m['_raw_mdd']:.2%}", "positive" if m['_raw_cagr'] > 0 else "negative")
+        render_metric_card("年化複合成長 (CAGR)", f"{m['_raw_cagr']:+.2%}", f"最大回撤 (MDD) {m['_raw_mdd']:.2%}", "positive" if m['_raw_cagr'] > 0 else "negative")
 
     if tolerance_pct > 0:
         st.success(
@@ -213,6 +242,7 @@ def render_portfolio_rebalance_tab(
 
     # 4. 利潤拆解圖
     st.subheader("🎯 哪項資產最賺錢？各標的利潤貢獻拆解 (Profit Attribution)")
+    st.caption("詳細拆解投資組合中每一檔標的（含現金活存儲備利息）的真實盈虧貢獻與報酬率。")
     attrib_rows = []
     for t, attr in attribution.items():
         if t in target_weights:
