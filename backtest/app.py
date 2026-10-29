@@ -1,6 +1,6 @@
 """
-量化回測與多資產配置終端 (Main Application Entry - 智慧解構防呆版)
-徹底解決 ValueError (unpacking mismatch) 與參數不對齊問題。
+量化回測與多資產配置終端 (Main Application Entry - 智慧解構與白話引導版)
+徹底解決 ValueError (unpacking mismatch)、全形標點符號容錯，並提供清晰的資金扣款時機指引。
 """
 import sys
 import os
@@ -36,17 +36,18 @@ for group_name, items in DataEngine.PRESET_OPTIONS.items():
 selected_presets = st.sidebar.multiselect(
     "熱門跨市場預設標的：",
     options=all_presets,
-    default=["0050 (元大台灣50)", "QQQ (納斯達克100)", "BTC-USD (比特幣)"]
+    default=["0050 (元大台灣50)", "QQQ (納斯達克100)", "BTC-USD (比特幣)"],
+    help="支援台股個股/ETF (如 0050, 00631L, 2330)、美股 (如 QQQ, NVDA) 及加密貨幣。"
 )
 
 custom_input = st.sidebar.text_input(
     "補充自訂代碼 (逗號分隔)：",
     value="",
-    help="例如：AAPL, 2330, NVDA, ETH-USD"
+    help="例如：AAPL, 2330, 00631L, 00679B, NVDA, ETH-USD (支援中英文逗號與空格自動清洗)"
 )
 
 preset_tickers = [p.split(" ")[0].strip().upper() for p in selected_presets]
-# 🛡️ 修復：自動清洗中文逗號、頓號與全形/半形空格
+# 🛡️ 自動清洗中文逗號、頓號與全形/半形空格
 clean_custom = custom_input.replace("，", ",").replace("、", ",").replace(" ", ",")
 custom_tickers = [s.strip().upper() for s in clean_custom.split(",") if s.strip()]
 target_symbols = list(dict.fromkeys(preset_tickers + custom_tickers))
@@ -62,14 +63,20 @@ initial_capital = st.sidebar.number_input(
     "期初投入本金",
     value=default_init,
     min_value=0.0,
-    step=10000.0 if is_twd else 500.0
+    step=10000.0 if is_twd else 500.0,
+    help="回測第 1 天立即全額買入建倉的單筆總資金。若只想純定期定額、期初不投大筆資金，請填 0。"
 )
 monthly_inflow = st.sidebar.number_input(
     "每月固定新注資 (定期定額)",
     value=default_monthly,
     min_value=0.0,
-    step=5000.0 if is_twd else 200.0
+    step=5000.0 if is_twd else 200.0,
+    help="每個月第一個開市日固定拿來扣款買入的新增資金。"
 )
+
+# 💡 資金扣款時機白話防呆提示
+if initial_capital == 0.0 and monthly_inflow > 0:
+    st.sidebar.caption("💡 **扣款時機提示**：期初本金設為 0 時，第 1 個月為開戶準備期，首筆定期定額將在**次月首個開市日**才扣款。若希望第 1 天就扣第一筆，請將該金額填入「期初投入本金」。")
 
 # --- 3. 回測時間區間 ---
 st.sidebar.markdown("### 3. 回測時間區間")
@@ -92,6 +99,8 @@ else:
     with c_e:
         end_date = st.date_input("結束", value=today).strftime("%Y-%m-%d")
 
+st.sidebar.caption("💡 **時間結算提示**：所有獲利、資產與年化報酬嚴格結算至結束日收盤。若指定日遇假日，自動對齊至前一真實開市日。")
+
 # --- 4. 交易摩擦成本 ---
 st.sidebar.markdown("### 4. 交易手續費與摩擦成本")
 auto_cost = st.sidebar.checkbox("依標的類別自動匹配官方稅費 (推薦)", value=True)
@@ -109,7 +118,7 @@ def load_market_data(symbols, s_date, e_date, curr):
     return DataEngine.load_aligned_market_data(symbols, s_date, e_date, target_currency=curr)
 
 st.title("⚡ PRO 量化回測與多資產配置終端")
-st.caption("跨市場數據對齊 (Union Calendar) • 零前瞻偏差撮合 • 真實獲利金額與利潤歸因拆解")
+st.caption("跨市場數據對齊 (Union Calendar) • 零前瞻偏差撮合 • 現金活存儲備計息 • 真實獲利金額與利潤歸因拆解")
 
 if not target_symbols:
     st.info("👈 請於側邊欄選擇至少一個交易標的。")
