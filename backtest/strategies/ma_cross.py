@@ -96,3 +96,54 @@ class SMACrossoverStrategy(BaseStrategy):
         slow_ma = IndicatorEngine.calculate_ma(df, slow, tf)
         signal = (fast_ma > slow_ma).astype(int)
         return signal.fillna(0)
+
+
+@register_strategy
+class EMACrossoverStrategy(BaseStrategy):
+    strategy_id = "ema_crossover"
+    display_name = "EMA 指數雙均線交叉"
+    description = "靈敏趨勢跟隨策略：以指數移動平均 (EMA) 權重放大近期價格變化，較 SMA 更早捕捉多空轉折。支援日線與週線。"
+    is_timing = True
+
+    @classmethod
+    def get_param_specs(cls) -> List[ParamSpec]:
+        return [
+            ParamSpec(
+                key="timeframe",
+                label="計算週期",
+                param_type="select",
+                default="日線 (Daily)",
+                options=["日線 (Daily)", "週線 (Weekly)"]
+            ),
+            ParamSpec(
+                key="fast",
+                label="快線週期 (日/週)",
+                param_type="int",
+                default=12,
+                min_value=3,
+                max_value=120,
+                step=1
+            ),
+            ParamSpec(
+                key="slow",
+                label="慢線週期 (日/週)",
+                param_type="int",
+                default=26,
+                min_value=5,
+                max_value=300,
+                step=1
+            )
+        ]
+
+    @classmethod
+    def generate_signals(cls, df: pd.DataFrame, params: Dict[str, Any]) -> pd.Series:
+        fast = int(params.get("fast", 12))
+        slow = int(params.get("slow", 26))
+        tf = params.get("timeframe", "日線 (Daily)")
+        if fast >= slow:
+            fast, slow = min(fast, slow), max(fast, slow)
+
+        fast_ema = IndicatorEngine.calculate_ema(df, fast, tf)
+        slow_ema = IndicatorEngine.calculate_ema(df, slow, tf)
+        signal = (fast_ema > slow_ema).astype(int)
+        return signal.fillna(0)

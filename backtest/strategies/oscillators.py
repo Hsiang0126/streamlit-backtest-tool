@@ -22,7 +22,7 @@ class RSIStrategy(BaseStrategy):
             ParamSpec(key="timeframe", label="計算週期", param_type="select", default="日線 (Daily)", options=["日線 (Daily)", "週線 (Weekly)"]),
             ParamSpec(key="period", label="RSI 週期", param_type="int", default=14, min_value=2, max_value=50, step=1),
             ParamSpec(key="buy", label="超賣買入門檻", param_type="float", default=30.0, min_value=5.0, max_value=45.0, step=1.0),
-            ParamSpec(key="sell", label="超買賣部門檻", param_type="float", default=70.0, min_value=55.0, max_value=95.0, step=1.0)
+            ParamSpec(key="sell", label="超買賣出門檻", param_type="float", default=70.0, min_value=55.0, max_value=95.0, step=1.0)
         ]
 
     @classmethod
@@ -80,7 +80,7 @@ class KDStrategy(BaseStrategy):
             ParamSpec(key="timeframe", label="計算週期", param_type="select", default="日線 (Daily)", options=["日線 (Daily)", "週線 (Weekly)"]),
             ParamSpec(key="period", label="KD 計算週期", param_type="int", default=9, min_value=3, max_value=30, step=1),
             ParamSpec(key="buy_k", label="超賣買入門檻 (K)", param_type="float", default=20.0, min_value=5.0, max_value=40.0, step=1.0),
-            ParamSpec(key="sell_k", label="超買賣部門檻 (K)", param_type="float", default=80.0, min_value=60.0, max_value=95.0, step=1.0)
+            ParamSpec(key="sell_k", label="超買賣出門檻 (K)", param_type="float", default=80.0, min_value=60.0, max_value=95.0, step=1.0)
         ]
 
     @classmethod

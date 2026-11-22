@@ -21,14 +21,15 @@ class DCAStrategy(BaseStrategy):
                 label="扣款頻率",
                 param_type="select",
                 default="每月 (Monthly)",
-                options=["每月 (Monthly)", "每週 (Weekly)", "每 10 交易日"]
+                options=["每月 (Monthly)", "每週 (Weekly)", "每 10 交易日"],
+                help_text="週定投/雙週定投會將每月新注資等比拆分為各期金額，確保每月實付總額一致。"
             ),
             ParamSpec(
                 key="reinvest_idle",
                 label="閒置資金與股利全額再投資",
                 param_type="bool",
                 default=True,
-                help_text="開啟時扣款日會將現金池全部投入以消除 Cash Drag；關閉時僅扣每期固定金額。"
+                help_text="開啟時扣款日會將現金池 (含累積股利) 全部投入消除 Cash Drag；關閉時僅扣當期定投額度。"
             )
         ]
 

@@ -1,9 +1,9 @@
 """
-量化回測與多資產配置終端 (Main Application Entry - 新手極簡引導與情境範本版)
-包含：
-- 🚀 30 秒新手一鍵情境範本 (小資定投、退休穩健全天候、積極成長槓桿型)
-- 步驟化引導提示 (Step 1 選擇情境與資金 -> Step 2 查看診斷與曲線)
-- 智慧解構與全形標點符號容錯
+量化回測與多資產配置終端 (Main Application Entry)
+設計原則：
+1. 簡潔分層側邊欄 + 一鍵情境範本 on_change 即時連動
+2. 支援單標的策略 PK 與多資產配置再平衡雙核心模式
+3. 完整支援台美股稅費、券商手續費折數、上櫃 .TWO 自動備援與無前瞻偏差對齊
 """
 import sys
 import os
@@ -13,81 +13,129 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core.data_engine import DataEngine
-from core.cost_model import CostModel, AssetCostStructure
+from core.cost_model import AssetCostStructure
 import strategies.dca
 import strategies.ma_cross
 import strategies.oscillators
-from ui.theme import apply_dark_theme
+import strategies.advanced
+from ui.theme import apply_dark_theme, render_context_banner
 from ui.tab_strategy_pk import render_strategy_pk_tab
 from ui.tab_portfolio_rebalance import render_portfolio_rebalance_tab
 
 st.set_page_config(
     layout="wide",
     page_title="PRO 量化回測與多資產配置終端",
-    page_icon="📈"
+    page_icon="📈",
 )
 apply_dark_theme()
 
-st.sidebar.title("🎛️ 控制中心")
+SCENARIO_OPTIONS = [
+    "自由自訂模式",
+    "小資定期定額 (0050 + QQQ)",
+    "退休股債全天候 (0050 + VT + 00679B)",
+    "積極科技成長 (0050 + 00631L + QQQ)",
+]
 
-# --- 0. 🚀 快速上手：一鍵情境範本 ---
-st.sidebar.markdown("### 0. 🚀 快速上手：一鍵情境範本")
-scenario_choice = st.sidebar.selectbox(
-    "選擇預設情境 (新手推薦直接選一項)：",
-    options=[
-        "自由自訂模式 (自選標的與資金)",
-        "🚀 【小資佛系無腦存】台美大盤定期定額 (0050 + QQQ)",
-        "🛡️ 【退休穩健全天候】股債現極致平衡 (0050 + VT + 00679B + 活存)",
-        "⚡ 【積極成長衝刺型】科技雙核心 + 槓桿 (0050 + 00631L + QQQ)"
-    ],
-    index=0,
-    help="選擇經典組合後，系統會自動幫您帶入標的、資金與配置，30 秒內即可看到專業回測！"
+ALL_PRESETS = []
+for _group_name, _items in DataEngine.PRESET_OPTIONS.items():
+    ALL_PRESETS.extend(_items)
+
+
+def _find_preset(prefix: str) -> str:
+    for item in ALL_PRESETS:
+        if item.startswith(prefix + " "):
+            return item
+    return ""
+
+
+def _init_sidebar_state():
+    defaults = {
+        "sb_scenario": SCENARIO_OPTIONS[0],
+        "sb_presets": [x for x in [_find_preset("0050"), _find_preset("QQQ"), _find_preset("BTC-USD")] if x],
+        "sb_custom": "",
+        "sb_currency": "新台幣 (TWD)",
+        "sb_init_cap": 300000.0,
+        "sb_monthly": 30000.0,
+        "sb_invest_day_one": True,
+        "sb_timespan": "近 5 年",
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+def _on_scenario_change():
+    choice = st.session_state.get("sb_scenario", SCENARIO_OPTIONS[0])
+    is_twd = "TWD" in st.session_state.get("sb_currency", "新台幣 (TWD)")
+    fx = 1.0 if is_twd else (1.0 / 32.0)
+
+    if "小資定期定額" in choice:
+        st.session_state["sb_presets"] = [x for x in [_find_preset("0050"), _find_preset("QQQ")] if x]
+        st.session_state["sb_custom"] = ""
+        st.session_state["sb_init_cap"] = 0.0
+        st.session_state["sb_monthly"] = round(10000.0 * fx, 0)
+        st.session_state["sb_invest_day_one"] = True
+        st.session_state["sb_timespan"] = "近 5 年"
+    elif "退休股債全天候" in choice:
+        st.session_state["sb_presets"] = [
+            x for x in [_find_preset("0050"), _find_preset("VT"), _find_preset("00679B")] if x
+        ]
+        st.session_state["sb_custom"] = ""
+        st.session_state["sb_init_cap"] = round(500000.0 * fx, 0)
+        st.session_state["sb_monthly"] = round(20000.0 * fx, 0)
+        st.session_state["sb_invest_day_one"] = True
+        st.session_state["sb_timespan"] = "近 5 年"
+        # 同步套用穩健現金預留權重
+        st.session_state["weight_input_CASH_RESERVE"] = 10.0
+    elif "積極科技成長" in choice:
+        st.session_state["sb_presets"] = [
+            x for x in [_find_preset("0050"), _find_preset("00631L"), _find_preset("QQQ")] if x
+        ]
+        st.session_state["sb_custom"] = ""
+        st.session_state["sb_init_cap"] = round(100000.0 * fx, 0)
+        st.session_state["sb_monthly"] = round(20000.0 * fx, 0)
+        st.session_state["sb_invest_day_one"] = True
+        st.session_state["sb_timespan"] = "近 3 年"
+
+
+def _on_currency_change():
+    prev_curr = st.session_state.get("_last_currency", "新台幣 (TWD)")
+    curr = st.session_state.get("sb_currency", "新台幣 (TWD)")
+    if prev_curr == curr:
+        return
+    factor = (1.0 / 32.0) if "USD" in curr else 32.0
+    st.session_state["sb_init_cap"] = round(float(st.session_state.get("sb_init_cap", 0.0)) * factor, 0)
+    st.session_state["sb_monthly"] = round(float(st.session_state.get("sb_monthly", 0.0)) * factor, 0)
+    st.session_state["_last_currency"] = curr
+
+
+_init_sidebar_state()
+st.session_state.setdefault("_last_currency", st.session_state["sb_currency"])
+
+# --- 側邊欄控制中心 ---
+st.sidebar.title("控制中心")
+
+st.sidebar.selectbox(
+    "一鍵情境範本",
+    options=SCENARIO_OPTIONS,
+    key="sb_scenario",
+    on_change=_on_scenario_change,
+    help="切換範本會即時自動更新標的、資金設定與回測區間。",
 )
 
-# 依情境自動判定預設值
-default_presets = ["0050 (元大台灣50)", "QQQ (納斯達克100)", "BTC-USD (比特幣)"]
-default_custom = ""
-default_init_val = 300000.0
-default_monthly_val = 30000.0
-default_span_idx = 1 # 近 5 年
-
-if "小資佛系" in scenario_choice:
-    default_presets = ["0050 (元大台灣50)", "QQQ (納斯達克100)"]
-    default_custom = ""
-    default_init_val = 0.0
-    default_monthly_val = 10000.0
-    default_span_idx = 1
-elif "退休穩健" in scenario_choice:
-    default_presets = ["0050 (元大台灣50)"]
-    default_custom = "VT, 00679B"
-    default_init_val = 500000.0
-    default_monthly_val = 20000.0
-    default_span_idx = 1
-elif "積極成長" in scenario_choice:
-    default_presets = ["0050 (元大台灣50)", "00631L (元大台灣50正2)", "QQQ (納斯達克100)"]
-    default_custom = ""
-    default_init_val = 100000.0
-    default_monthly_val = 20000.0
-    default_span_idx = 0 # 近 3 年
-
-# --- 1. 標的選擇 ---
-st.sidebar.markdown("### 1. 選擇標的資產")
-all_presets = []
-for group_name, items in DataEngine.PRESET_OPTIONS.items():
-    all_presets.extend(items)
-
-valid_defaults = [p for p in default_presets if p in all_presets]
+st.sidebar.markdown("##### 1. 標的資產")
 selected_presets = st.sidebar.multiselect(
-    "熱門跨市場預設標的：",
-    options=all_presets,
-    default=valid_defaults,
-    help="支援台股個股/ETF (如 0050, 00631L, 2330)、美股 (如 QQQ, NVDA) 及加密貨幣。"
+    "預設熱門標的",
+    options=ALL_PRESETS,
+    key="sb_presets",
+    help="支援台股上市/上櫃 (0050, 00631L, 00679B, 2330)、美股與加密貨幣。",
 )
 
 custom_input = st.sidebar.text_input(
-    "補充自訂代碼 (逗號分隔)：",
-    value=default_custom,
-    help="例如：AAPL, 2330, 00631L, 00679B, NVDA, ETH-USD (支援中英文逗號與空格自動清洗)"
+    "補充代碼 (逗號分隔)",
+    key="sb_custom",
+    placeholder="例如：VTI, 00878, 2881A",
+    help="支援中英文逗號或空格分隔，台股代碼自動判定上市 .TW / 上櫃 .TWO。",
 )
 
 preset_tickers = [p.split(" ")[0].strip().upper() for p in selected_presets]
@@ -95,36 +143,48 @@ clean_custom = custom_input.replace("，", ",").replace("、", ",").replace(" ",
 custom_tickers = [s.strip().upper() for s in clean_custom.split(",") if s.strip()]
 target_symbols = list(dict.fromkeys(preset_tickers + custom_tickers))
 
-# --- 2. 帳戶資金設定 ---
-st.sidebar.markdown("### 2. 帳戶資金設定")
-user_currency = st.sidebar.selectbox("計價幣別", ["新台幣 (TWD)", "美元 (USD)"], index=0)
+st.sidebar.markdown("##### 2. 資金與幣別")
+user_currency = st.sidebar.selectbox(
+    "計價幣別",
+    ["新台幣 (TWD)", "美元 (USD)"],
+    key="sb_currency",
+    on_change=_on_currency_change,
+)
 is_twd = "TWD" in user_currency
 
-init_val = default_init_val if is_twd else round(default_init_val / 30.0, 0)
-monthly_val = default_monthly_val if is_twd else round(default_monthly_val / 30.0, 0)
+c_cap1, c_cap2 = st.sidebar.columns(2)
+with c_cap1:
+    initial_capital = st.number_input(
+        "期初本金",
+        min_value=0.0,
+        step=10000.0 if is_twd else 500.0,
+        key="sb_init_cap",
+        help="第 1 天開盤即全額投入的單筆資金；純定期定額請填 0。",
+    )
+with c_cap2:
+    monthly_inflow = st.number_input(
+        "每月定投",
+        min_value=0.0,
+        step=5000.0 if is_twd else 200.0,
+        key="sb_monthly",
+        help="每月固定注入帳戶之新資金。",
+    )
 
-initial_capital = st.sidebar.number_input(
-    "期初投入本金",
-    value=float(init_val),
-    min_value=0.0,
-    step=10000.0 if is_twd else 500.0,
-    help="回測第 1 天立即全額買入建倉的單筆總資金。若只想純定期定額、期初不投大筆資金，請填 0。"
+invest_day_one = False
+if initial_capital == 0.0 and monthly_inflow > 0.0:
+    invest_day_one = st.sidebar.checkbox(
+        "首日即扣首筆定投",
+        key="sb_invest_day_one",
+        help="勾選後回測第 1 天即注入並買入第一筆定期定額；取消則自次月首個開市日起扣款。",
+    )
+
+st.sidebar.markdown("##### 3. 回測區間")
+time_span = st.sidebar.selectbox(
+    "回測時長",
+    ["近 3 年", "近 5 年", "近 10 年", "自訂日期"],
+    key="sb_timespan",
 )
-monthly_inflow = st.sidebar.number_input(
-    "每月固定新注資 (定期定額)",
-    value=float(monthly_val),
-    min_value=0.0,
-    step=5000.0 if is_twd else 200.0,
-    help="每個月第一個開市日固定拿來扣款買入的新增資金。"
-)
-
-if initial_capital == 0.0 and monthly_inflow > 0:
-    st.sidebar.caption("💡 **扣款時機提示**：期初本金設為 0 時，第 1 個月為開戶期，首筆定期定額將在**次月首個開市日**才扣款。若希望第 1 天就扣第一筆，請填入「期初投入本金」。")
-
-# --- 3. 回測時間區間 ---
-st.sidebar.markdown("### 3. 回測時間區間")
-time_span = st.sidebar.selectbox("回測時長", ["近 3 年", "近 5 年", "近 10 年", "自訂日期"], index=default_span_idx)
-today = pd.to_datetime("today")
+today = pd.to_datetime("today").normalize()
 
 if time_span == "近 3 年":
     start_date = (today - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
@@ -142,59 +202,81 @@ else:
     with c_e:
         end_date = st.date_input("結束", value=today).strftime("%Y-%m-%d")
 
-st.sidebar.caption("💡 **時間結算提示**：所有獲利、資產與年化報酬嚴格結算至結束日收盤。若遇假日，自動對齊至前一真實開市日。")
-
-# --- 4. 交易摩擦成本 ---
-st.sidebar.markdown("### 4. 交易手續費與摩擦成本")
-auto_cost = st.sidebar.checkbox("依標的類別自動匹配官方稅費 (推薦)", value=True)
-cost_override = None
-
-if not auto_cost:
-    f_rate = st.sidebar.number_input("單邊手續費率 (%)", value=0.071, step=0.01) / 100.0
-    t_rate = st.sidebar.number_input("賣出交易稅率 (%)", value=0.10, step=0.01) / 100.0
-    s_rate = st.sidebar.number_input("單邊滑價率 (%)", value=0.02, step=0.01) / 100.0
-    cost_override = AssetCostStructure(fee_rate=f_rate, tax_rate=t_rate, slippage_rate=s_rate)
+with st.sidebar.expander("4. 交易摩擦成本設定", expanded=False):
+    auto_cost = st.checkbox("自動匹配各市場官方稅費 (推薦)", value=True)
+    cost_override = None
+    tw_fee_discount = 0.5
+    if auto_cost:
+        discount_label = st.selectbox(
+            "台股券商手續費折數",
+            ["2.8 折 (電子下單常見)", "3 折", "5 折 (系統預設)", "6 折", "無折扣 (10 折)"],
+            index=2,
+            help="台股公定手續費 0.1425% 乘以折數；債券 ETF 證交稅自動設為 0%、股票 ETF 0.1%、個股 0.3%。",
+        )
+        discount_map = {
+            "2.8 折 (電子下單常見)": 0.28,
+            "3 折": 0.30,
+            "5 折 (系統預設)": 0.50,
+            "6 折": 0.60,
+            "無折扣 (10 折)": 1.00,
+        }
+        tw_fee_discount = discount_map.get(discount_label, 0.5)
+    else:
+        f_rate = st.number_input("單邊手續費率 (%)", value=0.071, min_value=0.0, step=0.01) / 100.0
+        t_rate = st.number_input("賣出交易稅率 (%)", value=0.10, min_value=0.0, step=0.01) / 100.0
+        s_rate = st.number_input("單邊滑價率 (%)", value=0.02, min_value=0.0, step=0.01) / 100.0
+        cost_override = AssetCostStructure(fee_rate=f_rate, tax_rate=t_rate, slippage_rate=s_rate)
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_market_data(symbols, s_date, e_date, curr):
     return DataEngine.load_aligned_market_data(symbols, s_date, e_date, target_currency=curr)
 
-st.title("⚡ PRO 量化回測與多資產配置終端")
-st.caption("跨市場數據對齊 (Union Calendar) • 零前瞻偏差撮合 • 現金活存儲備計息 • 真實獲利金額與利潤歸因拆解")
+
+if st.sidebar.button("重新抓取最新行情", width="stretch"):
+    load_market_data.clear()
+    st.rerun()
+
+
+# --- 主標題與橫幅 ---
+st.title("⚡ 量化回測與多資產配置終端")
+st.caption("跨市場日曆對齊 • 零前瞻偏差撮合 • 除權息還原指標 • 真實利潤歸因與風險評估")
 
 if not target_symbols:
-    st.info("👈 請於側邊欄選擇至少一個交易標的，或直接點選上方的「一鍵情境範本」。")
+    st.info("👈 請於左側選擇至少一個交易標的，或直接切換上方的「一鍵情境範本」。")
     st.stop()
 
-with st.spinner("正在自市場載入歷史行情並進行跨市場對齊與換匯..."):
+with st.spinner("正在載入市場歷史行情與進行跨市場匯率對齊..."):
     raw_res = load_market_data(
-        target_symbols,
+        tuple(target_symbols),
         start_date,
         end_date,
-        user_currency
+        user_currency,
     )
-
-    if len(raw_res) == 5:
-        individual_dict, aligned_panel, aligned_fx, curr_symbol, warnings = raw_res
-    elif len(raw_res) == 4:
-        individual_dict, aligned_panel, curr_symbol, warnings = raw_res
-        aligned_fx = pd.Series(31.0, index=aligned_panel.index if not aligned_panel.empty else None)
-    else:
-        st.error("載入數據格式異常，請確認 DataEngine 模組。")
-        st.stop()
+    individual_dict, aligned_panel, aligned_fx, curr_symbol, warnings = raw_res
 
 for w in warnings:
     st.sidebar.warning(w)
 
 if not individual_dict:
-    st.error("未能成功載入任何標的數據，請確認標的代碼是否正確。")
+    st.error("未能成功載入任何標的數據，請確認標的代碼是否正確或稍後重試。")
     st.stop()
 
-tab_pk, tab_rebalance = st.tabs([
-    "⚔️ 模式 A：單標的 × 多策略 PK (找最強策略)",
-    "💼 模式 B：多資產配置 × 定期再平衡 (看賺多少錢、誰最賺)"
-])
+cap_summary = f"期初 {curr_symbol} {initial_capital:,.0f} + 每月 {curr_symbol} {monthly_inflow:,.0f}"
+render_context_banner(
+    tickers=list(individual_dict.keys()),
+    start_str=start_date,
+    end_str=end_date,
+    capital_summary=cap_summary,
+    currency_label="TWD 新台幣" if is_twd else "USD 美元",
+)
+
+tab_pk, tab_rebalance = st.tabs(
+    [
+        "⚔️ 單標的 × 多策略 PK",
+        "💼 多資產配置 × 再平衡",
+    ]
+)
 
 with tab_pk:
     render_strategy_pk_tab(
@@ -203,8 +285,10 @@ with tab_pk:
         initial_capital=initial_capital,
         monthly_inflow=monthly_inflow,
         cost_override=cost_override,
+        tw_fee_discount=tw_fee_discount,
         fx_series=aligned_fx,
-        target_currency=user_currency
+        target_currency=user_currency,
+        invest_day_one=invest_day_one,
     )
 
 with tab_rebalance:
@@ -214,6 +298,8 @@ with tab_rebalance:
         initial_capital=initial_capital,
         monthly_inflow=monthly_inflow,
         cost_override=cost_override,
+        tw_fee_discount=tw_fee_discount,
         aligned_fx=aligned_fx,
-        target_currency=user_currency
+        target_currency=user_currency,
+        invest_day_one=invest_day_one,
     )
