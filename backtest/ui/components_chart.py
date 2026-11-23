@@ -33,7 +33,17 @@ PLOTLY_CONFIG = {
     "displayModeBar": "hover",
     "responsive": True,
     "displaylogo": False,
-    "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
+    "scrollZoom": False,
+    "doubleClick": False,
+    "modeBarButtonsToRemove": [
+        "zoom2d",
+        "pan2d",
+        "select2d",
+        "lasso2d",
+        "zoomIn2d",
+        "zoomOut2d",
+        "autoScale2d",
+    ],
 }
 _PLOTLY_CONFIG = PLOTLY_CONFIG
 
@@ -54,6 +64,7 @@ def _apply_terminal_layout(
         tickfont=dict(color="#475569", size=11),
         zeroline=False,
         automargin=True,
+        fixedrange=not show_range_buttons,
         title=x_title or None,
     )
     if show_range_buttons:
@@ -87,6 +98,7 @@ def _apply_terminal_layout(
         template="plotly_white",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="#FFFFFF",
+        dragmode=False,
         hovermode=hovermode,
         hoverlabel=dict(
             bgcolor="#FFFFFF",
@@ -103,6 +115,7 @@ def _apply_terminal_layout(
             zerolinecolor="#CBD5E1",
             tickfont=dict(color="#475569", size=11),
             automargin=True,
+            fixedrange=True,
             title=y_title or None,
         ),
         font=dict(

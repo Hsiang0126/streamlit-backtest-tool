@@ -5,6 +5,7 @@
 import html
 import re
 from typing import Dict, List
+import pandas as pd
 import streamlit as st
 
 
@@ -384,6 +385,103 @@ def apply_editorial_theme():
         font-weight: 400;
     }
 
+    /* 固定欄序響應式策略排行榜（防誤拖移與截字） */
+    .lb-wrapper {
+        margin: 4px 0 18px 0;
+    }
+    .lb-meta {
+        display: none;
+    }
+    .lb-scroll {
+        width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        border: 1px solid var(--border-subtle);
+        border-radius: 10px;
+        background-color: var(--bg-surface);
+    }
+    .lb-table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-variant-numeric: tabular-nums;
+        font-size: 0.83rem;
+        line-height: 1.4;
+    }
+    .lb-table thead th {
+        background-color: var(--bg-subtle);
+        color: var(--text-secondary);
+        font-weight: 600;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border-strong);
+        white-space: nowrap;
+        user-select: none;
+    }
+    .lb-table tbody th,
+    .lb-table tbody td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border-subtle);
+        white-space: nowrap;
+        color: var(--text-primary);
+    }
+    .lb-table tbody tr:last-child th,
+    .lb-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+    .lb-table th.lb-num,
+    .lb-table td.lb-num {
+        text-align: right;
+    }
+    .lb-table th.lb-sticky {
+        position: sticky;
+        left: 0;
+        z-index: 2;
+        text-align: left;
+        background-color: var(--bg-surface);
+        font-weight: 600;
+        border-right: 1px solid var(--border-subtle);
+        box-shadow: 2px 0 6px -4px rgba(15, 23, 42, 0.12);
+    }
+    .lb-table thead th.lb-sticky {
+        z-index: 3;
+        background-color: var(--bg-subtle);
+        border-right: 1px solid var(--border-strong);
+    }
+    .lb-table tbody tr.lb-champ td {
+        background-color: #F2F6FB;
+    }
+    .lb-table tbody tr.lb-champ th.lb-sticky {
+        background-color: #E8F0F9;
+        color: var(--accent-primary);
+        font-weight: 700;
+    }
+    .lb-table tbody tr:not(.lb-champ):hover td {
+        background-color: #F8FAFC;
+    }
+    .lb-table td.lb-pos {
+        color: var(--accent-positive);
+        font-weight: 600;
+    }
+    .lb-table td.lb-neg {
+        color: var(--accent-negative);
+        font-weight: 600;
+    }
+
+    /* 手機垂直滑動圖表防誤觸放大／軸邊緣拖曳 */
+    .js-plotly-plot .plotly .nsewdrag,
+    .js-plotly-plot .plotly .draglayer {
+        touch-action: pan-y !important;
+        cursor: default !important;
+    }
+    .js-plotly-plot .plotly .ewdrag,
+    .js-plotly-plot .plotly .nsdrag,
+    .js-plotly-plot .plotly .nwdrag,
+    .js-plotly-plot .plotly .nedrag,
+    .js-plotly-plot .plotly .swdrag,
+    .js-plotly-plot .plotly .sedrag {
+        pointer-events: none !important;
+    }
+
     /* 平板與窄視窗 RWD (<= 1120px) */
     @media (max-width: 1120px) {
         .metric-grid {
@@ -428,6 +526,14 @@ def apply_editorial_theme():
         }
         .hm-swipe-hint {
             display: inline;
+        }
+        .lb-meta {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 6px;
+        }
+        .js-plotly-plot .modebar-container {
+            display: none !important;
         }
     }
     @media (max-width: 520px) {
@@ -541,3 +647,52 @@ def render_insight_panel(title: str, bullets: List[str], tone: str = "info"):
         "</div>"
     )
     st.markdown(panel_html, unsafe_allow_html=True)
+
+
+_LEADERBOARD_SIGNED_COLS = {"淨獲利報酬率", "實賺獲利金額", "CAGR 年化報酬", "XIRR 資金加權"}
+
+
+def _build_leaderboard_html(df: pd.DataFrame) -> str:
+    """建構無 4 空格縮排之固定欄序策略排行榜 HTML 表格（凍結首欄不截字、手機可橫滑）。"""
+    cols = [str(c) for c in df.columns]
+    head_cells = [
+        f'<th scope="col" class="{"lb-sticky" if idx == 0 else "lb-num"}">{html.escape(col)}</th>'
+        for idx, col in enumerate(cols)
+    ]
+
+    body_rows: List[str] = []
+    for row_idx, (_, row) in enumerate(df.iterrows()):
+        cells: List[str] = []
+        for col_idx, col in enumerate(cols):
+            val_str = str(row.iloc[col_idx])
+            safe_val = html.escape(val_str)
+            if col_idx == 0:
+                cells.append(f'<th scope="row" class="lb-sticky">{safe_val}</th>')
+            else:
+                cls_parts = ["lb-num"]
+                if col in _LEADERBOARD_SIGNED_COLS:
+                    if "+" in val_str:
+                        cls_parts.append("lb-pos")
+                    elif "-" in val_str:
+                        cls_parts.append("lb-neg")
+                cells.append(f'<td class="{" ".join(cls_parts)}">{safe_val}</td>')
+        tr_cls = ' class="lb-champ"' if row_idx == 0 else ""
+        body_rows.append(f"<tr{tr_cls}>{''.join(cells)}</tr>")
+
+    return (
+        '<div class="lb-wrapper">'
+        '<div class="lb-meta"><span class="hm-swipe-hint">← 左右滑動檢視完整指標 →</span></div>'
+        '<div class="lb-scroll">'
+        '<table class="lb-table">'
+        f'<thead><tr>{"".join(head_cells)}</tr></thead>'
+        f'<tbody>{"".join(body_rows)}</tbody>'
+        "</table>"
+        "</div>"
+        "</div>"
+    )
+
+
+def render_leaderboard_table(df: pd.DataFrame):
+    if df is None or df.empty:
+        return
+    st.markdown(_build_leaderboard_html(df), unsafe_allow_html=True)

@@ -20,7 +20,7 @@ from core.portfolio_engine import BacktestEngine
 from core.trade_ledger import TradeLedger
 from core.grid_optimizer import GridOptimizer
 from strategies.registry import StrategyRegistry
-from ui.theme import render_metric_grid, render_insight_panel
+from ui.theme import render_metric_grid, render_insight_panel, render_leaderboard_table
 from ui.components_chart import (
     PLOTLY_CONFIG,
     _apply_terminal_layout,
@@ -522,14 +522,7 @@ def render_strategy_pk_tab(
             "最長套牢天數",
             "累積交易次數",
         ]
-        st.dataframe(
-            display_df[display_cols],
-            hide_index=True,
-            width="stretch",
-            column_config={
-                "策略": st.column_config.TextColumn("策略", width="small"),
-            },
-        )
+        render_leaderboard_table(display_df[display_cols])
 
         c_chart_hdr, c_log_chk = st.columns([3, 1])
         with c_chart_hdr:

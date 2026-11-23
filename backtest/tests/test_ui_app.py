@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 from streamlit.testing.v1 import AppTest
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -18,8 +19,13 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from core.data_engine import DataEngine
 from strategies.registry import StrategyRegistry
-from ui.components_chart import _build_monthly_heatmap_html, _monthly_cell_colors
-from ui.theme import _format_inline_markdown
+from ui.components_chart import (
+    PLOTLY_CONFIG,
+    _apply_terminal_layout,
+    _build_monthly_heatmap_html,
+    _monthly_cell_colors,
+)
+from ui.theme import _build_leaderboard_html, _format_inline_markdown
 
 
 def _make_market_df(ticker: str, seed: int, periods: int = 420) -> pd.DataFrame:
@@ -359,6 +365,39 @@ class TestStreamlitUI(unittest.TestCase):
             _find_button(at, key="btn_apply_best_grid").click().run()
             self._assert_clean_run(at, "apply macd grid")
             self.assertIn(macd_disp, list(at.multiselect(key="pk_selected_strats").value))
+
+    def test_leaderboard_html_and_mobile_plotly_zoom_guard(self):
+        lb_df = pd.DataFrame(
+            [
+                {"策略": "★ 定期定額", "淨獲利報酬率": "+45.20%", "實賺獲利金額": "NT$ +120,000"},
+                {"策略": "SMA 雙均線<script>", "淨獲利報酬率": "-3.10%", "實賺獲利金額": "NT$ -5,000"},
+            ]
+        )
+        lb_html = _build_leaderboard_html(lb_df)
+        self.assertIn("lb-scroll", lb_html)
+        self.assertIn("lb-sticky", lb_html)
+        self.assertIn("lb-champ", lb_html)
+        self.assertIn("lb-pos", lb_html)
+        self.assertIn("lb-neg", lb_html)
+        self.assertNotIn("<script>", lb_html)
+        self.assertIn("&lt;script&gt;", lb_html)
+        self.assertLess(lb_html.index(">策略<"), lb_html.index(">淨獲利報酬率<"))
+        self.assertLess(lb_html.index(">淨獲利報酬率<"), lb_html.index(">實賺獲利金額<"))
+        self.assertFalse(any(line.startswith("    ") for line in lb_html.splitlines()))
+
+        self.assertIs(PLOTLY_CONFIG["scrollZoom"], False)
+        self.assertIs(PLOTLY_CONFIG["doubleClick"], False)
+        self.assertIn("zoom2d", PLOTLY_CONFIG["modeBarButtonsToRemove"])
+
+        fig_static = _apply_terminal_layout(go.Figure(), show_range_buttons=False)
+        self.assertIs(fig_static.layout.dragmode, False)
+        self.assertIs(fig_static.layout.xaxis.fixedrange, True)
+        self.assertIs(fig_static.layout.yaxis.fixedrange, True)
+
+        fig_ts = _apply_terminal_layout(go.Figure(), show_range_buttons=True)
+        self.assertIs(fig_ts.layout.dragmode, False)
+        self.assertIs(fig_ts.layout.xaxis.fixedrange, False)
+        self.assertIs(fig_ts.layout.yaxis.fixedrange, True)
 
 
 if __name__ == "__main__":
