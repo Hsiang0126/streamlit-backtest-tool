@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from core.data_engine import DataEngine
 from strategies.registry import StrategyRegistry
+from ui.components_chart import _build_monthly_heatmap_html, _monthly_cell_colors
 from ui.theme import _format_inline_markdown
 
 
@@ -312,7 +313,31 @@ class TestStreamlitUI(unittest.TestCase):
         for disp, cls in StrategyRegistry.get_all().items():
             short = StrategyRegistry.get_short_name(disp)
             self.assertTrue(short)
-            self.assertLessEqual(len(short), 10, f"short_name too long: {short}")
+            self.assertLessEqual(len(short), 8, f"short_name too long: {short}")
+        self.assertEqual(StrategyRegistry.get_short_name("定期定額 / 買入持有 (DCA / Buy & Hold)"), "定期定額")
+
+        # 1b. 月報酬 HTML 熱力圖顏色對比、內容跳脫與無 4 空格縮排檢查
+        self.assertEqual(_monthly_cell_colors(-15.0)[1], "#FFFFFF")
+        self.assertEqual(_monthly_cell_colors(15.0)[1], "#FFFFFF")
+        self.assertEqual(_monthly_cell_colors(0.0)[1], "#0F172A")
+        self.assertEqual(_monthly_cell_colors(2.0)[1], "#0F172A")
+
+        hm_df = pd.DataFrame(
+            {
+                "1月": [0.1234, np.nan],
+                "全年": [-0.15, 0.02],
+            },
+            index=["2024<script>", "2025"],
+        )
+        hm_html = _build_monthly_heatmap_html(hm_df)
+        self.assertIn("heatmap-scroll", hm_html)
+        self.assertIn("hm-year", hm_html)
+        self.assertIn("hm-annual", hm_html)
+        self.assertIn("+12.3%", hm_html)
+        self.assertIn("-15.0%", hm_html)
+        self.assertNotIn("<script>", hm_html)
+        self.assertIn("&lt;script&gt;", hm_html)
+        self.assertFalse(any(line.startswith("    ") for line in hm_html.splitlines()))
 
         with patch("core.data_engine.DataEngine.load_aligned_market_data", side_effect=_fake_load_aligned_market_data):
             at = AppTest.from_file(str(ROOT_DIR / "app.py"), default_timeout=45)

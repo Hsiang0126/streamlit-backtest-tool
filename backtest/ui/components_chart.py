@@ -10,7 +10,8 @@
 7. 多資產相關係數熱力圖 (Correlation Heatmap)
 8. 多資產動態權重漂移堆疊面積圖 (Weight Drift & Rebalance Markers)
 """
-from typing import Optional, Dict, Any, List
+import html
+from typing import Optional, Dict, Any, List, Tuple
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -207,6 +208,91 @@ def render_drawdown_chart(
     st.plotly_chart(fig, width="stretch", config=_PLOTLY_CONFIG)
 
 
+_MONTHLY_COLOR_STOPS = [
+    (-15.0, (190, 18, 60)),
+    (-6.6, (252, 165, 165)),
+    (0.0, (248, 250, 252)),
+    (6.6, (134, 239, 172)),
+    (15.0, (21, 128, 61)),
+]
+
+
+def _monthly_cell_colors(val: float) -> Tuple[str, str]:
+    """依月報酬百分比線性內插背景色，並依 WCAG 相對亮度自動選取高對比前景文字色。"""
+    clamped = max(-15.0, min(15.0, float(val)))
+    rgb = _MONTHLY_COLOR_STOPS[-1][1]
+    for (v0, c0), (v1, c1) in zip(_MONTHLY_COLOR_STOPS, _MONTHLY_COLOR_STOPS[1:]):
+        if clamped <= v1:
+            t = 0.0 if v1 == v0 else (clamped - v0) / (v1 - v0)
+            rgb = tuple(int(round(c0[i] + (c1[i] - c0[i]) * t)) for i in range(3))
+            break
+
+    def _lin(ch: int) -> float:
+        s = ch / 255.0
+        return s / 12.92 if s <= 0.04045 else ((s + 0.055) / 1.055) ** 2.4
+
+    lum = 0.2126 * _lin(rgb[0]) + 0.7152 * _lin(rgb[1]) + 0.0722 * _lin(rgb[2])
+    fg = "#FFFFFF" if (1.05 / (lum + 0.05)) >= ((lum + 0.05) / 0.058) else "#0F172A"
+    bg = f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+    return bg, fg
+
+
+def _build_monthly_heatmap_html(monthly_df: pd.DataFrame) -> str:
+    """建構無 4 空格縮排之響應式年度月報酬 HTML 表格（凍結年度欄、手機可橫滑）。"""
+    cols = list(monthly_df.columns)
+    head_cells = ['<th scope="col" class="hm-year">年度</th>']
+    for col in cols:
+        cls = ' class="hm-annual"' if str(col) == "全年" else ""
+        head_cells.append(f'<th scope="col"{cls}>{html.escape(str(col))}</th>')
+
+    body_rows: List[str] = []
+    for yr, row in monthly_df.iterrows():
+        yr_str = str(yr)
+        cells = [f'<th scope="row" class="hm-year">{html.escape(yr_str)}</th>']
+        for col in cols:
+            col_str = str(col)
+            is_annual = col_str == "全年"
+            raw_val = row[col]
+            try:
+                num_val = float(raw_val)
+            except (TypeError, ValueError):
+                num_val = float("nan")
+            if np.isfinite(num_val):
+                pct = num_val * 100.0
+                bg, fg = _monthly_cell_colors(pct)
+                cls = ' class="hm-annual"' if is_annual else ""
+                tip = html.escape(f"{yr_str} {col_str}：{pct:+.2f}%")
+                cells.append(
+                    f'<td{cls} style="background-color:{bg};color:{fg};" title="{tip}">{pct:+.1f}%</td>'
+                )
+            else:
+                empty_cls = "hm-empty hm-annual" if is_annual else "hm-empty"
+                cells.append(f'<td class="{empty_cls}">–</td>')
+        body_rows.append(f"<tr>{''.join(cells)}</tr>")
+
+    legend_html = (
+        '<div class="hm-legend">'
+        '<span class="hm-legend-scale">'
+        "<span>報酬 (%)</span>"
+        "<span>-15%</span>"
+        '<span class="hm-legend-bar" aria-hidden="true"></span>'
+        "<span>+15%</span>"
+        "<span>(中立 0%)</span>"
+        "</span>"
+        '<span class="hm-swipe-hint">← 左右滑動檢視各月 →</span>'
+        "</div>"
+    )
+    table_html = (
+        '<div class="heatmap-scroll">'
+        '<table class="hm-table">'
+        f"<thead><tr>{''.join(head_cells)}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody>"
+        "</table>"
+        "</div>"
+    )
+    return f'<div class="hm-wrapper">{legend_html}{table_html}</div>'
+
+
 def render_monthly_returns_heatmap(monthly_df: pd.DataFrame, title: str = ""):
     if monthly_df is None or monthly_df.empty:
         st.info("區間天數較短，尚無完整月度報酬矩陣。")
@@ -215,40 +301,7 @@ def render_monthly_returns_heatmap(monthly_df: pd.DataFrame, title: str = ""):
     if title:
         st.markdown(f"###### {title}")
 
-    z_pct = monthly_df.to_numpy(dtype=float) * 100.0
-    text_grid = [
-        [f"{v:+.1f}%" if np.isfinite(v) else "" for v in row]
-        for row in z_pct
-    ]
-
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=z_pct,
-            x=list(monthly_df.columns),
-            y=list(monthly_df.index),
-            zmid=0.0,
-            zmin=-15.0,
-            zmax=15.0,
-            text=text_grid,
-            texttemplate="%{text}",
-            textfont=dict(size=10 if len(monthly_df) > 15 else 11),
-            colorscale=[
-                [0.0, "#BE123C"],
-                [0.28, "#FCA5A5"],
-                [0.5, "#F8FAFC"],
-                [0.72, "#86EFAC"],
-                [1.0, "#15803D"],
-            ],
-            colorbar=dict(title="報酬 (%)"),
-            hovertemplate="%{y} %{x}<br>報酬率: %{z:+.2f}%<extra></extra>",
-        )
-    )
-    chart_height = max(280, min(920, 30 * len(monthly_df) + 100))
-    _apply_terminal_layout(fig, height=chart_height, hovermode="closest", show_legend_bottom=False)
-    fig.update_layout(margin=dict(l=46, r=12, t=36, b=20))
-    fig.update_yaxes(autorange="reversed", type="category")
-    fig.update_xaxes(side="top")
-    st.plotly_chart(fig, width="stretch", config=_PLOTLY_CONFIG)
+    st.markdown(_build_monthly_heatmap_html(monthly_df), unsafe_allow_html=True)
 
 
 def render_candlestick_with_markers(
@@ -390,7 +443,17 @@ def render_parameter_heatmap(
                 [0.72, "#86EFAC"],
                 [1.0, "#15803D"],
             ],
-            colorbar=dict(title=metric_label),
+            colorbar=dict(
+                orientation="h",
+                y=-0.26,
+                yanchor="top",
+                x=0.5,
+                xanchor="center",
+                len=0.92,
+                thickness=12,
+                title=dict(text=metric_label, side="top", font=dict(size=12)),
+                tickfont=dict(size=12),
+            ),
             hovertemplate=f"{x_title}: %{{x}}<br>{y_title}: %{{y}}<br>{metric_label}: %{{z:.2f}}<extra></extra>",
         )
     )
@@ -405,7 +468,8 @@ def render_parameter_heatmap(
                 marker=dict(symbol="star", size=15, color="#B45309", line=dict(color="#FFFFFF", width=1.4)),
                 text=["最佳參數"],
                 textposition="top center",
-                textfont=dict(color="#92400E", size=11),
+                textfont=dict(color="#92400E", size=12),
+                cliponaxis=False,
                 hoverinfo="skip",
             )
         )
@@ -414,12 +478,13 @@ def render_parameter_heatmap(
         fig,
         x_title=x_title,
         y_title=y_title,
-        height=440,
+        height=470,
         hovermode="closest",
         show_legend_bottom=False,
     )
-    fig.update_xaxes(showgrid=False)
-    fig.update_yaxes(showgrid=False, autorange="reversed" if reverse_y else True)
+    fig.update_layout(margin=dict(l=48, r=14, t=28, b=108))
+    fig.update_xaxes(showgrid=False, tickfont=dict(color="#334155", size=12))
+    fig.update_yaxes(showgrid=False, autorange="reversed" if reverse_y else True, tickfont=dict(color="#334155", size=12))
     st.plotly_chart(fig, width="stretch", config=_PLOTLY_CONFIG)
 
 
@@ -538,18 +603,30 @@ def render_correlation_heatmap(corr_matrix: pd.DataFrame):
             zmid=0.0,
             text=text_vals,
             texttemplate="%{text}",
-            textfont=dict(size=12),
+            textfont=dict(size=13),
             colorscale=[
                 [0.0, "#1D4ED8"],
                 [0.5, "#F8FAFC"],
                 [1.0, "#DC2626"],
             ],
-            colorbar=dict(title="相關係數"),
+            colorbar=dict(
+                orientation="h",
+                y=-0.24,
+                yanchor="top",
+                x=0.5,
+                xanchor="center",
+                len=0.88,
+                thickness=12,
+                title=dict(text="相關係數", side="top", font=dict(size=12)),
+                tickfont=dict(size=12),
+            ),
             hovertemplate="%{y} vs %{x}<br>相關係數: %{z:.3f}<extra></extra>",
         )
     )
-    _apply_terminal_layout(fig, height=360, hovermode="closest", show_legend_bottom=False)
-    fig.update_yaxes(autorange="reversed")
+    _apply_terminal_layout(fig, height=390, hovermode="closest", show_legend_bottom=False)
+    fig.update_layout(margin=dict(l=48, r=14, t=24, b=96))
+    fig.update_xaxes(tickfont=dict(color="#334155", size=12))
+    fig.update_yaxes(autorange="reversed", tickfont=dict(color="#334155", size=12))
     st.plotly_chart(fig, width="stretch", config=_PLOTLY_CONFIG)
 
 

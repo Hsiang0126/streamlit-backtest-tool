@@ -10,7 +10,7 @@ from strategies.registry import register_strategy
 class DCAStrategy(BaseStrategy):
     strategy_id = "dca_buy_and_hold"
     display_name = "定期定額 / 買入持有 (DCA / Buy & Hold)"
-    short_name = "定期定額 DCA"
+    short_name = "定期定額"
     description = "經典紀律定投策略：期初全額買入，每月固定注入資金全額自動扣款再投資。"
     is_timing = False
 

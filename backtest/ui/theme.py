@@ -283,6 +283,107 @@ def apply_editorial_theme():
     ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
     ::-webkit-scrollbar-thumb:hover { background: #94A3B8; }
 
+    /* 響應式年度月報酬熱力矩陣 */
+    .hm-wrapper {
+        margin: 4px 0 16px 0;
+    }
+    .hm-legend {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 8px;
+        font-size: 0.78rem;
+        color: var(--text-secondary);
+    }
+    .hm-legend-scale {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-variant-numeric: tabular-nums;
+    }
+    .hm-legend-bar {
+        display: inline-block;
+        width: 112px;
+        height: 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border-subtle);
+        background: linear-gradient(90deg, #BE123C 0%, #FCA5A5 28%, #F8FAFC 50%, #86EFAC 72%, #15803D 100%);
+    }
+    .hm-swipe-hint {
+        display: none;
+        font-size: 0.74rem;
+        color: var(--text-muted);
+    }
+    .heatmap-scroll {
+        width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        border: 1px solid var(--border-subtle);
+        border-radius: 10px;
+        background-color: var(--bg-surface);
+    }
+    .hm-table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-variant-numeric: tabular-nums;
+        font-size: 0.8125rem;
+        line-height: 1.35;
+    }
+    .hm-table thead th {
+        background-color: var(--bg-subtle);
+        color: var(--text-secondary);
+        font-weight: 600;
+        padding: 8px 6px;
+        text-align: center;
+        border-bottom: 1px solid var(--border-strong);
+        white-space: nowrap;
+    }
+    .hm-table tbody td {
+        padding: 8px 5px;
+        text-align: center;
+        font-weight: 600;
+        border-bottom: 1px solid rgba(226, 232, 240, 0.7);
+        border-right: 1px solid rgba(255, 255, 255, 0.45);
+        min-width: 56px;
+        white-space: nowrap;
+    }
+    .hm-table tbody tr:last-child td,
+    .hm-table tbody tr:last-child th {
+        border-bottom: none;
+    }
+    .hm-table th.hm-year {
+        position: sticky;
+        left: 0;
+        z-index: 2;
+        background-color: var(--bg-subtle);
+        color: var(--text-primary);
+        font-weight: 600;
+        padding: 8px 10px;
+        text-align: left;
+        border-right: 1px solid var(--border-strong);
+        border-bottom: 1px solid var(--border-subtle);
+        min-width: 56px;
+        white-space: nowrap;
+    }
+    .hm-table thead th.hm-year {
+        z-index: 3;
+        border-bottom: 1px solid var(--border-strong);
+    }
+    .hm-table th.hm-annual,
+    .hm-table td.hm-annual {
+        border-left: 2px solid var(--border-strong);
+        min-width: 66px;
+        font-weight: 700;
+    }
+    .hm-table td.hm-empty {
+        background-color: var(--bg-surface);
+        color: #CBD5E1;
+        font-weight: 400;
+    }
+
     /* 平板與窄視窗 RWD (<= 1120px) */
     @media (max-width: 1120px) {
         .metric-grid {
@@ -324,6 +425,9 @@ def apply_editorial_theme():
         div[data-testid="stSidebarCollapsedControl"] button {
             min-width: 44px;
             min-height: 44px;
+        }
+        .hm-swipe-hint {
+            display: inline;
         }
     }
     @media (max-width: 520px) {

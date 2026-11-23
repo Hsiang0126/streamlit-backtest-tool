@@ -189,14 +189,20 @@ def _cached_grid_search(
 
 def _render_risk_return_scatter(df_results: pd.DataFrame, champion_name: str):
     fig = go.Figure()
+    xs: List[float] = []
+    ys: List[float] = []
     for idx, row in df_results.iterrows():
         s_name = row["策略名稱"]
         short_name = StrategyRegistry.get_short_name(s_name)
         is_champ = s_name == champion_name
+        x_val = abs(float(row["_raw_mdd"])) * 100.0
+        y_val = float(row["_raw_cagr"]) * 100.0
+        xs.append(x_val)
+        ys.append(y_val)
         fig.add_trace(
             go.Scatter(
-                x=[abs(float(row["_raw_mdd"])) * 100.0],
-                y=[float(row["_raw_cagr"]) * 100.0],
+                x=[x_val],
+                y=[y_val],
                 mode="markers+text",
                 name=short_name,
                 marker=dict(
@@ -207,7 +213,8 @@ def _render_risk_return_scatter(df_results: pd.DataFrame, champion_name: str):
                 ),
                 text=[short_name],
                 textposition="top center",
-                textfont=dict(size=10, color="#334155"),
+                textfont=dict(size=11, color="#334155"),
+                cliponaxis=False,
                 hovertemplate=(
                     f"{s_name}<br>最大回撤 (MDD): %{{x:.2f}}%<br>"
                     f"年化報酬 (CAGR): %{{y:+.2f}}%<br>"
@@ -224,6 +231,12 @@ def _render_risk_return_scatter(df_results: pd.DataFrame, champion_name: str):
         hovermode="closest",
         show_legend_bottom=True,
     )
+    if xs and ys:
+        x_span = max(max(xs) - min(xs), 4.0)
+        y_span = max(max(ys) - min(ys), 4.0)
+        fig.update_xaxes(range=[max(0.0, min(xs) - x_span * 0.22), max(xs) + x_span * 0.22])
+        fig.update_yaxes(range=[min(ys) - y_span * 0.14, max(ys) + y_span * 0.24])
+    fig.update_layout(margin=dict(l=20, r=20, t=28, b=84))
     st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
 
 
@@ -336,7 +349,7 @@ def render_strategy_pk_tab(
         for strat_name in selected_strats:
             strat_cls = StrategyRegistry.get(strat_name)
             specs = strat_cls.get_param_specs()
-            st.markdown(f"**{strat_name}** — *{strat_cls.description}*")
+            st.markdown(f"**{StrategyRegistry.get_short_name(strat_name)}** — *{strat_cls.description}*")
             params: Dict[str, Any] = {}
             if specs:
                 cols = st.columns(min(len(specs), 3))
@@ -426,6 +439,7 @@ def render_strategy_pk_tab(
     )
     champion_row = df_results.iloc[0]
     champion_name = champion_row["策略名稱"]
+    champ_short = StrategyRegistry.get_short_name(champion_name)
     champion_profit = float(champion_row["_raw_net_profit"])
     champion_final = float(champion_row["_raw_final"])
     champion_mdd = float(champion_row["_raw_mdd"])
@@ -447,7 +461,7 @@ def render_strategy_pk_tab(
                 {
                     "title": "冠軍實賺淨利潤",
                     "value": f"{curr_symbol} {champion_profit:+,.0f}",
-                    "sub": f"冠軍：{champion_name}",
+                    "sub": f"冠軍：{champ_short}",
                     "state": "positive" if champion_profit >= 0 else "negative",
                 },
                 {
@@ -486,7 +500,7 @@ def render_strategy_pk_tab(
                 f"**擇時避險勝出**：在空頭回檔時及時離場避險，將最大回撤控制在 **{champion_row['最大歷史回撤 (MDD)']}**。",
                 f"夏普比率 **{champion_row['夏普比率 (Sharpe)']}**，索提諾比率 **{champion_row['索提諾比率 (Sortino)']}**。",
             ]
-        render_insight_panel(f"冠軍策略解讀 — {champion_name}", reason_bullets, tone="success" if champion_profit >= 0 else "warning")
+        render_insight_panel(f"冠軍策略解讀 — {champ_short}", reason_bullets, tone="success" if champion_profit >= 0 else "warning")
 
         st.markdown("##### 策略績效完整排行榜")
         display_df = df_results.copy()
@@ -523,7 +537,6 @@ def render_strategy_pk_tab(
         with c_log_chk:
             use_log_scale = st.checkbox("對數座標 (Log Scale)", value=False, key="pk_log_scale")
 
-        champ_short = StrategyRegistry.get_short_name(champion_name)
         chart_equity_curves = {
             StrategyRegistry.get_short_name(s_name): c_df
             for s_name, c_df in equity_curves.items()
@@ -552,7 +565,8 @@ def render_strategy_pk_tab(
         )
         if inspect_m_strat in equity_curves:
             monthly_df = PerformanceMetrics.calculate_monthly_returns(equity_curves[inspect_m_strat])
-            render_monthly_returns_heatmap(monthly_df, title=f"{inspect_m_strat} — 各年度月報酬矩陣")
+            inspect_m_short = StrategyRegistry.get_short_name(inspect_m_strat)
+            render_monthly_returns_heatmap(monthly_df, title=f"{inspect_m_short} — 各年度月報酬矩陣")
 
         st.markdown("##### 各策略「風險 vs 年化報酬」分佈象限")
         st.caption("越往左上方（低回撤、高年化報酬）代表策略風險調整後性價比越高。")
@@ -569,6 +583,7 @@ def render_strategy_pk_tab(
         if inspect_strat in equity_curves:
             res_curve = equity_curves[inspect_strat]
             strat_cls = StrategyRegistry.get(inspect_strat)
+            inspect_short = StrategyRegistry.get_short_name(inspect_strat)
 
             if not strat_cls.is_timing:
                 buys_df, buy_summary = TradeLedger.extract_buy_records(res_curve, curr_symbol)
@@ -585,7 +600,7 @@ def render_strategy_pk_tab(
                     st.dataframe(buys_df.set_index("購買序號"), width="stretch")
                     csv_buys = buys_df.to_csv(index=False, encoding="utf-8-sig")
                     st.download_button(
-                        label=f"下載【{inspect_strat}】購買紀錄 (CSV)",
+                        label=f"下載【{inspect_short}】購買紀錄 (CSV)",
                         data=csv_buys,
                         file_name=f"{target_ticker}_{strat_cls.strategy_id}_purchase_history.csv",
                         mime="text/csv",
@@ -682,7 +697,7 @@ def render_strategy_pk_tab(
                     st.dataframe(trades_df.set_index("進場日期"), width="stretch")
                     csv_trades = trades_df.to_csv(index=False, encoding="utf-8-sig")
                     st.download_button(
-                        label=f"下載【{inspect_strat}】逐筆交易明細 (CSV)",
+                        label=f"下載【{inspect_short}】逐筆交易明細 (CSV)",
                         data=csv_trades,
                         file_name=f"{target_ticker}_{strat_cls.strategy_id}_trade_log.csv",
                         mime="text/csv",
