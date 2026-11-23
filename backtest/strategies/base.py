@@ -25,6 +25,7 @@ class BaseStrategy(ABC):
 
     strategy_id: str = "base_strategy"
     display_name: str = "基礎策略"
+    short_name: str = ""
     description: str = ""
     is_timing: bool = True  # True 表示為擇時策略 (產生 0/1 訊號)；False 表示為定投/階梯資金策略
 

@@ -90,6 +90,12 @@ def _on_scenario_change():
     is_twd = "TWD" in st.session_state.get("sb_currency", "新台幣 (TWD)")
     fx = 1.0 if is_twd else (1.0 / 32.0)
 
+    if "自由自訂模式" not in choice:
+        for k in list(st.session_state.keys()):
+            if k.startswith("weight_input_") and k != "weight_input_CASH_RESERVE":
+                del st.session_state[k]
+        st.session_state.pop("_port_last_tickers", None)
+
     if "小資定期定額" in choice:
         st.session_state["sb_presets"] = [x for x in [_find_preset("0050"), _find_preset("QQQ")] if x]
         st.session_state["sb_custom"] = ""
@@ -97,6 +103,7 @@ def _on_scenario_change():
         st.session_state["sb_monthly"] = round(10000.0 * fx, 0)
         st.session_state["sb_invest_day_one"] = True
         st.session_state["sb_timespan"] = "近 5 年"
+        st.session_state["weight_input_CASH_RESERVE"] = 0.0
     elif "退休股債全天候" in choice:
         st.session_state["sb_presets"] = [
             x for x in [_find_preset("0050"), _find_preset("VT"), _find_preset("00679B")] if x
@@ -116,6 +123,7 @@ def _on_scenario_change():
         st.session_state["sb_monthly"] = round(20000.0 * fx, 0)
         st.session_state["sb_invest_day_one"] = True
         st.session_state["sb_timespan"] = "近 3 年"
+        st.session_state["weight_input_CASH_RESERVE"] = 0.0
 
 
 def _on_currency_change():
@@ -260,7 +268,7 @@ with st.sidebar.expander("4. 交易摩擦成本設定", expanded=False):
         cost_override = AssetCostStructure(fee_rate=f_rate, tax_rate=t_rate, slippage_rate=s_rate)
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
+@st.cache_data(show_spinner=False, ttl=3600, max_entries=16)
 def load_market_data(symbols, s_date, e_date, curr):
     return DataEngine.load_aligned_market_data(symbols, s_date, e_date, target_currency=curr)
 

@@ -12,6 +12,7 @@ import re
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from core.cost_model import CostModel
 
 
 class DataEngine:
@@ -63,10 +64,7 @@ class DataEngine:
     @staticmethod
     def is_taiwan_ticker(ticker: str) -> bool:
         """判定是否為台股上市櫃代碼 (支援 4~6 碼及含英文字尾，如 2330, 0050, 00631L, 00679B, 00981A, 2881A)。"""
-        clean = ticker.strip().upper()
-        if clean.endswith((".TW", ".TWO")):
-            return True
-        return bool(re.match(r"^\d{4,6}[A-Z]?$", clean))
+        return CostModel.is_taiwan_ticker(ticker)
 
     @classmethod
     def is_likely_otc_taiwan_ticker(cls, ticker: str) -> bool:
@@ -253,7 +251,7 @@ class DataEngine:
                 actions=True,
                 group_by="ticker",
                 progress=False,
-                threads=True,
+                threads=False,
             )
         except Exception as exc:
             return {}, pd.DataFrame(), pd.Series(dtype=float), curr_symbol, [f"下載資料失敗：{exc}"]

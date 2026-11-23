@@ -118,9 +118,9 @@ class PerformanceMetrics:
         if monthly_last.empty:
             return pd.DataFrame()
 
-        # 為首月補上該段起始基準淨值 1.0，使第 1 個月亦能算出真實報酬
+        # 為首月補上開盤前基準淨值 1.0，保留第 1 個交易日漲跌幅與建倉成本
         monthly_rets = monthly_last.pct_change()
-        monthly_rets.iloc[0] = (monthly_last.iloc[0] / float(twr_s.iloc[0])) - 1.0 if twr_s.iloc[0] > 0 else 0.0
+        monthly_rets.iloc[0] = float(monthly_last.iloc[0]) - 1.0
 
         years = sorted(monthly_rets.index.year.unique())
         rows = []
@@ -200,8 +200,7 @@ class PerformanceMetrics:
 
         elapsed_days = max(1, (pd.Timestamp(active_twr.index[-1]) - pd.Timestamp(active_twr.index[0])).days)
         years = elapsed_days / 365.25
-        start_idx_val = float(active_twr.iloc[0]) if float(active_twr.iloc[0]) > 0 else 1.0
-        ending_rel = max(float(active_twr.iloc[-1]) / start_idx_val, 0.0)
+        ending_rel = max(float(active_twr.iloc[-1]), 0.0)
         cagr = (ending_rel ** (1.0 / years) - 1.0) if ending_rel > 0 and years > 0.05 else total_twr
 
         running_peak = active_twr.cummax()

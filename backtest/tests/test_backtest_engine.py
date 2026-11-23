@@ -575,6 +575,126 @@ class TestBacktestSystem(unittest.TestCase):
         self.assertLess(len(candle_trace.x), 1400)
         self.assertGreater(len(candle_trace.x), 900)
 
+    def test_monthly_rebalance_skip_still_invests_inflow_and_small_orders(self):
+        dates = pd.bdate_range("2024-01-02", periods=250)
+        df_a = pd.DataFrame(
+            {
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "adj_open": 100.0,
+                "adj_high": 101.0,
+                "adj_low": 99.0,
+                "adj_close": 100.0,
+                "dividend": 0.0,
+                "split": 0.0,
+                "is_trading_day": True,
+                "quote_currency": "USD",
+            },
+            index=dates,
+        )
+        panel = pd.concat({"A": df_a, "B": df_a.copy(), "C": df_a.copy()}, axis=1)
+        fx = pd.Series(32.0, index=dates)
+        costs = {k: AssetCostStructure(0.0, 0.0, 0.0) for k in ("A", "B", "C")}
+
+        # Bug #2: 每月再平衡遇門檻略過時，當月定投仍須投入，不可卡在現金
+        res1, _, stats1 = BacktestEngine.run_multi_asset_portfolio(
+            panel,
+            fx,
+            {"A": 0.34, "B": 0.33, "C": 0.33},
+            1000000.0,
+            30000.0,
+            "每月再平衡 (Monthly)",
+            costs,
+            "TWD",
+            tolerance_band=0.05,
+        )
+        self.assertGreater(stats1["成功略過調倉次數"], 0)
+        self.assertLess(float(res1["cash"].iloc[-1]), 50.0)
+
+        # Bug #3: 每月定投 $100 平分至 3 檔 ($33.3/檔, 介於 $10..$50) 不得被賣單迴圈誤刪
+        res2, _, _ = BacktestEngine.run_multi_asset_portfolio(
+            panel,
+            fx,
+            {"A": 0.34, "B": 0.33, "C": 0.33},
+            0.0,
+            100.0,
+            "不進行再平衡 (Buy & Drift)",
+            costs,
+            "USD",
+            tolerance_band=0.0,
+            invest_day_one=True,
+        )
+        self.assertLess(float(res2["cash"].iloc[-1]), 20.0)
+        self.assertGreater(float(res2["shares_A"].iloc[-1]), 4.0)
+
+    def test_stoploss_overlap_with_bear_exit_and_equal_ma_guard(self):
+        dates = pd.bdate_range("2024-01-02", periods=10)
+        df_sl = pd.DataFrame(
+            {
+                "open": [100.0, 100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0],
+                "high": [100.0] * 10,
+                "low": [80.0] * 10,
+                "close": [100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0],
+                "adj_close": [100.0, 100.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0, 80.0],
+                "dividend": [0.0] * 10,
+                "quote_currency": "USD",
+            },
+            index=dates,
+        )
+        pos = pd.Series([1, 1, 1, 0, 1, 1, 1, 1, 1, 1], index=dates)
+        mc = pd.Series([False] * 10, index=dates)
+        res_sl = BacktestEngine._execute_timing_loop(
+            df_sl,
+            pos,
+            10000.0,
+            0.0,
+            AssetCostStructure(0.0, 0.0, 0.0),
+            mc,
+            np.ones(10),
+            stop_loss_pct=0.10,
+        )
+        # Bug #4: 第 4 天停損出場恰遇 raw_pos == 0，後續第 5 天再轉多時必須正常買入
+        self.assertEqual(int(res_sl["position"].iloc[3]), 0)
+        self.assertEqual(int(res_sl["position"].iloc[-1]), 1)
+
+        # #15 & zero capital safety: fast == slow 自動保護且 0 資金不崩潰
+        df_syn = _make_synthetic_df(periods=120, user_start="2023-01-02", daily_growth=0.002, amplitude=0.05)
+        sma_cls = StrategyRegistry.get("SMA 雙均線交叉 (黃金交叉)")
+        sig_eq = sma_cls.generate_signals(df_syn, {"timeframe": "日線 (Daily)", "fast": 20, "slow": 20})
+        self.assertGreater(int(sig_eq.sum()), 0)
+        macd_line, sig_line = IndicatorEngine.calculate_macd(df_syn, 12, 12, 9)
+        self.assertGreater(float(macd_line.abs().sum()), 0.0)
+
+        res_zero = BacktestEngine.run_single_strategy(
+            df_syn,
+            "定期定額 / 買入持有 (DCA / Buy & Hold)",
+            {"freq": "每月 (Monthly)", "reinvest_idle": True},
+            initial_capital=0.0,
+            monthly_inflow=0.0,
+            cost_struct=AssetCostStructure(0.0, 0.0, 0.0),
+            target_currency="TWD",
+        )
+        m_zero = PerformanceMetrics.evaluate(res_zero, "NT$", 0.0)
+        self.assertEqual(m_zero["_raw_final"], 0.0)
+
+    def test_first_month_return_cagr_and_vectorized_oscillator(self):
+        # Bug #6: 首日即漲 +5%，次月收 +10% -> 1月應為 +5%，全年 +10%
+        d_m = pd.to_datetime(["2024-01-31", "2024-02-29"])
+        df_m = pd.DataFrame({"equity_net": [1.05, 1.10], "total_invested": [100000.0, 100000.0]}, index=d_m)
+        monthly = PerformanceMetrics.calculate_monthly_returns(df_m)
+        self.assertAlmostEqual(float(monthly.loc["2024", "1月"]), 0.05, places=6)
+        self.assertAlmostEqual(float(monthly.loc["2024", "全年"]), 0.10, places=6)
+
+        # Bug #9: 向量化 _oscillator_signals 須與序列 RSI / KD 邏輯完全一致
+        df_osc = _make_synthetic_df(periods=200, user_start="2023-01-02", amplitude=0.12)
+        rsi_vals = IndicatorEngine.calculate_rsi(df_osc, 14).values
+        vec_sig = GridOptimizer._oscillator_signals(rsi_vals, 30.0, 70.0)
+        rsi_cls = StrategyRegistry.get("RSI 超買超賣")
+        seq_sig = rsi_cls.generate_signals(df_osc, {"timeframe": "日線 (Daily)", "period": 14, "buy": 30.0, "sell": 70.0}).to_numpy(dtype=int)
+        np.testing.assert_array_equal(vec_sig, seq_sig)
+
     def test_ui_files_syntax_ast(self):
         py_files = [
             ROOT_DIR / "app.py",

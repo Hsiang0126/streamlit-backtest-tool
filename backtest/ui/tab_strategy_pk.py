@@ -33,7 +33,7 @@ from ui.components_chart import (
 )
 
 
-@st.cache_data(show_spinner=False, ttl=1800)
+@st.cache_data(show_spinner=False, ttl=1800, max_entries=64)
 def _cached_single_strategy_run(
     df_target: pd.DataFrame,
     strat_name: str,
@@ -65,24 +65,147 @@ def _cached_single_strategy_run(
     )
 
 
+@st.cache_data(show_spinner=False, ttl=1800, max_entries=12)
+def _cached_grid_search(
+    df_target: pd.DataFrame,
+    opt_strategy: str,
+    metric_key: str,
+    opt_tf: str,
+    param_a: float,
+    param_b: float,
+    initial_capital: float,
+    monthly_inflow: float,
+    fee_rate: float,
+    tax_rate: float,
+    slippage_rate: float,
+    fx_series: Optional[pd.Series],
+    target_currency: str,
+    invest_day_one: bool,
+):
+    cost_struct = AssetCostStructure(fee_rate=fee_rate, tax_rate=tax_rate, slippage_rate=slippage_rate)
+    if "SMA 雙均線" in opt_strategy:
+        heatmap_df, flat_df, best_p = GridOptimizer.run_ma_grid(
+            df_target,
+            fast_range=(5, 31, int(param_a)),
+            slow_range=(30, 121, int(param_b)),
+            timeframe=opt_tf,
+            initial_capital=initial_capital,
+            monthly_inflow=monthly_inflow,
+            cost_struct=cost_struct,
+            fx_series=fx_series,
+            target_currency=target_currency,
+            metric=metric_key,
+            invest_day_one=invest_day_one,
+        )
+        x_lbl, y_lbl, rev_y = "快線週期", "慢線週期", True
+        apply_info = {
+            "strat_id": "sma_crossover",
+            "updates": {"timeframe": opt_tf, "fast": int(best_p["參數X (快線)"]), "slow": int(best_p["參數Y (慢線)"])},
+        }
+    elif "MACD" in opt_strategy:
+        heatmap_df, flat_df, best_p = GridOptimizer.run_macd_grid(
+            df_target,
+            fast_range=(5, 21, int(param_a)),
+            slow_range=(20, 61, int(param_b)),
+            timeframe=opt_tf,
+            initial_capital=initial_capital,
+            monthly_inflow=monthly_inflow,
+            cost_struct=cost_struct,
+            fx_series=fx_series,
+            target_currency=target_currency,
+            metric=metric_key,
+            invest_day_one=invest_day_one,
+        )
+        x_lbl, y_lbl, rev_y = "EMA 快線週期", "EMA 慢線週期", True
+        apply_info = {
+            "strat_id": "macd_strategy",
+            "updates": {"timeframe": opt_tf, "fast": int(best_p["參數X (EMA快線)"]), "slow": int(best_p["參數Y (EMA慢線)"])},
+        }
+    elif "RSI" in opt_strategy:
+        rsi_p, step_val = int(param_a), int(param_b)
+        heatmap_df, flat_df, best_p = GridOptimizer.run_rsi_grid(
+            df_target,
+            period=rsi_p,
+            buy_range=(15, 41, step_val),
+            sell_range=(60, 86, step_val),
+            timeframe=opt_tf,
+            initial_capital=initial_capital,
+            monthly_inflow=monthly_inflow,
+            cost_struct=cost_struct,
+            fx_series=fx_series,
+            target_currency=target_currency,
+            metric=metric_key,
+            invest_day_one=invest_day_one,
+        )
+        x_lbl, y_lbl, rev_y = "超賣買入門檻 (RSI)", "超買賣出門檻 (RSI)", False
+        apply_info = {
+            "strat_id": "rsi_strategy",
+            "updates": {"timeframe": opt_tf, "period": rsi_p, "buy": float(best_p["參數X (超賣買入)"]), "sell": float(best_p["參數Y (超買賣出)"])},
+        }
+    elif "KD" in opt_strategy:
+        kd_p, step_val = int(param_a), int(param_b)
+        heatmap_df, flat_df, best_p = GridOptimizer.run_kd_grid(
+            df_target,
+            period=kd_p,
+            buy_range=(15, 36, step_val),
+            sell_range=(65, 86, step_val),
+            timeframe=opt_tf,
+            initial_capital=initial_capital,
+            monthly_inflow=monthly_inflow,
+            cost_struct=cost_struct,
+            fx_series=fx_series,
+            target_currency=target_currency,
+            metric=metric_key,
+            invest_day_one=invest_day_one,
+        )
+        x_lbl, y_lbl, rev_y = "超賣買入門檻 (K值)", "超買賣出門檻 (K值)", False
+        apply_info = {
+            "strat_id": "kd_strategy",
+            "updates": {"timeframe": opt_tf, "period": kd_p, "buy_k": float(best_p["參數X (超賣買入K)"]), "sell_k": float(best_p["參數Y (超買賣出K)"])},
+        }
+    else:
+        dip_amt, sma_step = float(param_a), int(param_b)
+        heatmap_df, flat_df, best_p = GridOptimizer.run_dip_grid(
+            df_target,
+            sma_range=(20, 121, sma_step),
+            interval_range=(1, 11, 1),
+            buy_amount=dip_amt,
+            timeframe=opt_tf,
+            initial_capital=initial_capital,
+            monthly_inflow=monthly_inflow,
+            cost_struct=cost_struct,
+            fx_series=fx_series,
+            target_currency=target_currency,
+            metric=metric_key,
+            invest_day_one=invest_day_one,
+        )
+        x_lbl, y_lbl, rev_y = "基準均線週期 (SMA)", "加碼冷卻天數", False
+        apply_info = {
+            "strat_id": "dip_buyer",
+            "updates": {"timeframe": opt_tf, "sma_period": int(best_p["參數X (SMA均線週期)"]), "min_interval": int(best_p["參數Y (抄底間隔天數)"]), "buy_amount": dip_amt},
+        }
+    return heatmap_df, flat_df, best_p, x_lbl, y_lbl, rev_y, apply_info
+
+
 def _render_risk_return_scatter(df_results: pd.DataFrame, champion_name: str):
     fig = go.Figure()
     for idx, row in df_results.iterrows():
         s_name = row["策略名稱"]
+        short_name = StrategyRegistry.get_short_name(s_name)
         is_champ = s_name == champion_name
         fig.add_trace(
             go.Scatter(
                 x=[abs(float(row["_raw_mdd"])) * 100.0],
                 y=[float(row["_raw_cagr"]) * 100.0],
                 mode="markers+text",
-                name=s_name,
+                name=short_name,
                 marker=dict(
                     size=16 if is_champ else 11,
                     symbol="star" if is_champ else "circle",
                     color=PALETTE[idx % len(PALETTE)],
                     line=dict(color="#FFFFFF", width=1.4 if is_champ else 0.8),
                 ),
-                text=[s_name.split(" ")[0]],
+                text=[short_name],
                 textposition="top center",
                 textfont=dict(size=10, color="#334155"),
                 hovertemplate=(
@@ -119,12 +242,6 @@ def render_strategy_pk_tab(
         st.info("請在側邊欄選擇標的並載入市場數據。")
         return
 
-    # 若有上輪觸發的一鍵套用最佳參數，於對應參數元件渲染前先行寫入 session_state
-    pending_apply = st.session_state.pop("_pending_grid_apply", None)
-    if isinstance(pending_apply, dict):
-        for k, v in pending_apply.items():
-            st.session_state[k] = v
-
     all_strategies = StrategyRegistry.list_names()
     default_strats = [
         "定期定額 / 買入持有 (DCA / Buy & Hold)",
@@ -133,6 +250,22 @@ def render_strategy_pk_tab(
         "雙重濾網動能 (均線趨勢 + RSI)",
     ]
     valid_defaults = [s for s in default_strats if s in all_strategies]
+
+    # 若有上輪觸發的一鍵套用最佳參數，於對應參數元件渲染前先行寫入 session_state 並補入參戰列表
+    pending_apply = st.session_state.pop("_pending_grid_apply", None)
+    if isinstance(pending_apply, dict):
+        for k, v in pending_apply.items():
+            st.session_state[k] = v
+
+    if "pk_selected_strats" not in st.session_state:
+        st.session_state["pk_selected_strats"] = valid_defaults if valid_defaults else all_strategies[:2]
+
+    pending_strat = st.session_state.pop("_pending_grid_strat_name", None)
+    if pending_strat and pending_strat in all_strategies:
+        curr_sel = [s for s in st.session_state.get("pk_selected_strats", []) if s in all_strategies]
+        if pending_strat not in curr_sel:
+            curr_sel.append(pending_strat)
+        st.session_state["pk_selected_strats"] = curr_sel
 
     c_sel1, c_sel2 = st.columns([1.1, 2.4])
     with c_sel1:
@@ -145,7 +278,8 @@ def render_strategy_pk_tab(
         selected_strats = st.multiselect(
             "參戰策略 (可複選)",
             options=all_strategies,
-            default=valid_defaults if valid_defaults else all_strategies[:2],
+            format_func=StrategyRegistry.get_short_name,
+            key="pk_selected_strats",
             help="勾選多個策略同時同場競技。",
         )
 
@@ -355,23 +489,33 @@ def render_strategy_pk_tab(
         render_insight_panel(f"冠軍策略解讀 — {champion_name}", reason_bullets, tone="success" if champion_profit >= 0 else "warning")
 
         st.markdown("##### 策略績效完整排行榜")
+        display_df = df_results.copy()
+        display_df["策略"] = [
+            f"★ {StrategyRegistry.get_short_name(n)}" if idx == 0 else StrategyRegistry.get_short_name(n)
+            for idx, n in enumerate(display_df["策略名稱"])
+        ]
         display_cols = [
-            "策略名稱",
+            "策略",
+            "淨獲利報酬率",
             "實賺獲利金額",
+            "CAGR 年化報酬",
+            "最大歷史回撤 (MDD)",
+            "夏普比率 (Sharpe)",
             "最終總資產",
             "累積投入本金",
-            "淨獲利報酬率",
-            "CAGR 年化報酬",
             "XIRR 資金加權",
-            "夏普比率 (Sharpe)",
             "卡瑪比率 (Calmar)",
-            "最大歷史回撤 (MDD)",
             "最長套牢天數",
             "累積交易次數",
         ]
-        display_df = df_results[display_cols].copy()
-        display_df.loc[0, "策略名稱"] = f"{champion_name}（領先）"
-        st.dataframe(display_df.set_index("策略名稱"), width="stretch")
+        st.dataframe(
+            display_df[display_cols],
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "策略": st.column_config.TextColumn("策略", width="small"),
+            },
+        )
 
         c_chart_hdr, c_log_chk = st.columns([3, 1])
         with c_chart_hdr:
@@ -379,25 +523,31 @@ def render_strategy_pk_tab(
         with c_log_chk:
             use_log_scale = st.checkbox("對數座標 (Log Scale)", value=False, key="pk_log_scale")
 
+        champ_short = StrategyRegistry.get_short_name(champion_name)
+        chart_equity_curves = {
+            StrategyRegistry.get_short_name(s_name): c_df
+            for s_name, c_df in equity_curves.items()
+        }
         render_equity_comparison_chart(
-            equity_curves,
+            chart_equity_curves,
             curr_symbol=curr_symbol,
-            champion_name=champion_name,
+            champion_name=champ_short,
             log_scale=use_log_scale,
         )
 
         st.markdown("##### 水下歷史回撤對比 (Drawdown)")
         dd_curves = {
-            s_name: PerformanceMetrics.calculate_drawdown_series(c_df)
+            StrategyRegistry.get_short_name(s_name): PerformanceMetrics.calculate_drawdown_series(c_df)
             for s_name, c_df in equity_curves.items()
         }
-        render_drawdown_chart(dd_curves, champion_name=champion_name)
+        render_drawdown_chart(dd_curves, champion_name=champ_short)
 
     # --- 子分頁 2：月度報酬與風險分析 ---
     with sub_monthly:
         inspect_m_strat = st.selectbox(
             "選擇檢視月度報酬熱力圖之策略",
             selected_strats,
+            format_func=StrategyRegistry.get_short_name,
             key="pk_monthly_strat",
         )
         if inspect_m_strat in equity_curves:
@@ -413,6 +563,7 @@ def render_strategy_pk_tab(
         inspect_strat = st.selectbox(
             "選擇檢視成交紀錄之策略",
             selected_strats,
+            format_func=StrategyRegistry.get_short_name,
             key="select_inspect_strat",
         )
         if inspect_strat in equity_curves:
@@ -565,21 +716,24 @@ def render_strategy_pk_tab(
             )
         metric_key = {"總報酬率 (%)": "roi", "夏普比率 (Sharpe)": "sharpe", "卡瑪比率 (Calmar)": "calmar"}[metric_choice]
 
+        long_horizon = len(df_target) > 3000
         c_opt1, c_opt2, c_opt3 = st.columns(3)
         if "SMA 雙均線" in opt_strategy:
             with c_opt1:
-                fast_step = st.selectbox("快線步長", [1, 2, 3], index=1)
+                fast_step = st.selectbox("快線步長", [1, 2, 3], index=2 if long_horizon else 1)
             with c_opt2:
                 slow_step = st.selectbox("慢線步長", [2, 5, 10], index=1)
             with c_opt3:
                 opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0, key="grid_tf_sma")
+            param_a, param_b = float(fast_step), float(slow_step)
         elif "MACD" in opt_strategy:
             with c_opt1:
-                fast_step = st.selectbox("快線 EMA 步長", [1, 2], index=0)
+                fast_step = st.selectbox("快線 EMA 步長", [1, 2], index=1 if long_horizon else 0)
             with c_opt2:
                 slow_step = st.selectbox("慢線 EMA 步長", [1, 2, 5], index=1)
             with c_opt3:
                 opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0, key="grid_tf_macd")
+            param_a, param_b = float(fast_step), float(slow_step)
         elif "RSI" in opt_strategy:
             with c_opt1:
                 rsi_p = st.number_input("RSI 基準週期", value=14, min_value=5, max_value=30, step=1)
@@ -587,6 +741,7 @@ def render_strategy_pk_tab(
                 step_val = st.selectbox("門檻掃描步長", [1, 2, 5], index=1)
             with c_opt3:
                 opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0, key="grid_tf_rsi")
+            param_a, param_b = float(rsi_p), float(step_val)
         elif "KD" in opt_strategy:
             with c_opt1:
                 kd_p = st.number_input("KD 基準週期", value=9, min_value=3, max_value=20, step=1)
@@ -594,6 +749,7 @@ def render_strategy_pk_tab(
                 step_val = st.selectbox("K值掃描步長", [1, 2, 5], index=1)
             with c_opt3:
                 opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0, key="grid_tf_kd")
+            param_a, param_b = float(kd_p), float(step_val)
         else:
             with c_opt1:
                 dip_amt = st.number_input("每次加碼買入金額", value=50000.0, min_value=1000.0, step=10000.0)
@@ -601,70 +757,26 @@ def render_strategy_pk_tab(
                 sma_step = st.selectbox("均線掃描步長", [5, 10, 20], index=1)
             with c_opt3:
                 opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0, key="grid_tf_dip")
+            param_a, param_b = float(dip_amt), float(sma_step)
 
         if st.button("開始執行 2D 矩陣尋優", key="btn_run_generic_grid", type="primary"):
             with st.spinner("正在運算所有參數組合之收益與風險矩陣..."):
-                if "SMA 雙均線" in opt_strategy:
-                    heatmap_df, flat_df, best_p = GridOptimizer.run_ma_grid(
-                        df_target, fast_range=(5, 31, fast_step), slow_range=(30, 121, slow_step),
-                        timeframe=opt_tf, initial_capital=initial_capital, monthly_inflow=monthly_inflow,
-                        cost_struct=cost_struct, fx_series=fx_series, target_currency=target_currency,
-                        metric=metric_key, invest_day_one=invest_day_one,
-                    )
-                    x_lbl, y_lbl, rev_y = "快線週期", "慢線週期", True
-                    apply_info = {
-                        "strat_id": "sma_crossover",
-                        "updates": {"timeframe": opt_tf, "fast": int(best_p["參數X (快線)"]), "slow": int(best_p["參數Y (慢線)"])},
-                    }
-                elif "MACD" in opt_strategy:
-                    heatmap_df, flat_df, best_p = GridOptimizer.run_macd_grid(
-                        df_target, fast_range=(5, 21, fast_step), slow_range=(20, 61, slow_step),
-                        timeframe=opt_tf, initial_capital=initial_capital, monthly_inflow=monthly_inflow,
-                        cost_struct=cost_struct, fx_series=fx_series, target_currency=target_currency,
-                        metric=metric_key, invest_day_one=invest_day_one,
-                    )
-                    x_lbl, y_lbl, rev_y = "EMA 快線週期", "EMA 慢線週期", True
-                    apply_info = {
-                        "strat_id": "macd_strategy",
-                        "updates": {"timeframe": opt_tf, "fast": int(best_p["參數X (EMA快線)"]), "slow": int(best_p["參數Y (EMA慢線)"])},
-                    }
-                elif "RSI" in opt_strategy:
-                    heatmap_df, flat_df, best_p = GridOptimizer.run_rsi_grid(
-                        df_target, period=int(rsi_p), buy_range=(15, 41, step_val), sell_range=(60, 86, step_val),
-                        timeframe=opt_tf, initial_capital=initial_capital, monthly_inflow=monthly_inflow,
-                        cost_struct=cost_struct, fx_series=fx_series, target_currency=target_currency,
-                        metric=metric_key, invest_day_one=invest_day_one,
-                    )
-                    x_lbl, y_lbl, rev_y = "超賣買入門檻 (RSI)", "超買賣出門檻 (RSI)", False
-                    apply_info = {
-                        "strat_id": "rsi_strategy",
-                        "updates": {"timeframe": opt_tf, "period": int(rsi_p), "buy": float(best_p["參數X (超賣買入)"]), "sell": float(best_p["參數Y (超買賣出)"])},
-                    }
-                elif "KD" in opt_strategy:
-                    heatmap_df, flat_df, best_p = GridOptimizer.run_kd_grid(
-                        df_target, period=int(kd_p), buy_range=(15, 36, step_val), sell_range=(65, 86, step_val),
-                        timeframe=opt_tf, initial_capital=initial_capital, monthly_inflow=monthly_inflow,
-                        cost_struct=cost_struct, fx_series=fx_series, target_currency=target_currency,
-                        metric=metric_key, invest_day_one=invest_day_one,
-                    )
-                    x_lbl, y_lbl, rev_y = "超賣買入門檻 (K值)", "超買賣出門檻 (K值)", False
-                    apply_info = {
-                        "strat_id": "kd_strategy",
-                        "updates": {"timeframe": opt_tf, "period": int(kd_p), "buy_k": float(best_p["參數X (超賣買入K)"]), "sell_k": float(best_p["參數Y (超買賣出K)"])},
-                    }
-                else:
-                    heatmap_df, flat_df, best_p = GridOptimizer.run_dip_grid(
-                        df_target, sma_range=(20, 121, sma_step), interval_range=(1, 11, 1),
-                        buy_amount=dip_amt, timeframe=opt_tf, initial_capital=initial_capital,
-                        monthly_inflow=monthly_inflow, cost_struct=cost_struct,
-                        fx_series=fx_series, target_currency=target_currency,
-                        metric=metric_key, invest_day_one=invest_day_one,
-                    )
-                    x_lbl, y_lbl, rev_y = "基準均線週期 (SMA)", "加碼冷卻天數", False
-                    apply_info = {
-                        "strat_id": "dip_buyer",
-                        "updates": {"timeframe": opt_tf, "sma_period": int(best_p["參數X (SMA均線週期)"]), "min_interval": int(best_p["參數Y (抄底間隔天數)"]), "buy_amount": float(dip_amt)},
-                    }
+                heatmap_df, flat_df, best_p, x_lbl, y_lbl, rev_y, apply_info = _cached_grid_search(
+                    df_target=df_target,
+                    opt_strategy=opt_strategy,
+                    metric_key=metric_key,
+                    opt_tf=opt_tf,
+                    param_a=param_a,
+                    param_b=param_b,
+                    initial_capital=initial_capital,
+                    monthly_inflow=monthly_inflow,
+                    fee_rate=cost_struct.fee_rate,
+                    tax_rate=cost_struct.tax_rate,
+                    slippage_rate=cost_struct.slippage_rate,
+                    fx_series=fx_series,
+                    target_currency=target_currency,
+                    invest_day_one=invest_day_one,
+                )
 
                 st.session_state["last_grid_result"] = {
                     "ticker": target_ticker,
@@ -702,7 +814,10 @@ def render_strategy_pk_tab(
                     f"{target_ticker}_{sid}_{p_k}": p_v
                     for p_k, p_v in app_info["updates"].items()
                 }
-                st.toast("已套用最佳參數，請於「總覽與成長曲線」查看更新結果。")
+                strat_disp_name = StrategyRegistry.get_display_name_by_id(sid)
+                if strat_disp_name:
+                    st.session_state["_pending_grid_strat_name"] = strat_disp_name
+                st.toast("已套用最佳參數，並自動將該策略加入「總覽與成長曲線」對比。")
                 st.rerun()
 
             render_parameter_heatmap(

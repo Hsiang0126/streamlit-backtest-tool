@@ -10,6 +10,7 @@ from strategies.registry import register_strategy
 class DCAStrategy(BaseStrategy):
     strategy_id = "dca_buy_and_hold"
     display_name = "定期定額 / 買入持有 (DCA / Buy & Hold)"
+    short_name = "定期定額 DCA"
     description = "經典紀律定投策略：期初全額買入，每月固定注入資金全額自動扣款再投資。"
     is_timing = False
 
@@ -38,6 +39,7 @@ class DCAStrategy(BaseStrategy):
 class DipBuyerStrategy(BaseStrategy):
     strategy_id = "dip_buyer"
     display_name = "跌破均線且創新低買入 (Dip DCA)"
+    short_name = "逢低抄底"
     description = "價值低吸策略：當價格低於指定均線且跌破區間新低時，逢低分批加碼買入。支援週線基準。"
     is_timing = False
 

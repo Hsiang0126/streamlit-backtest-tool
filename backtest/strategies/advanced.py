@@ -15,6 +15,7 @@ from core.indicators import IndicatorEngine
 class BollingerStrategy(BaseStrategy):
     strategy_id = "bollinger_bands"
     display_name = "布林通道策略 (Bollinger Bands)"
+    short_name = "布林通道"
     description = "波動率區間策略：支援「跌破下軌超賣抄底/觸及上軌停利」之均值回歸，或「突破上軌追漲/跌破中軌出場」之趨勢突破模式。"
     is_timing = True
 
@@ -84,6 +85,7 @@ class BollingerStrategy(BaseStrategy):
 class DualFilterMomentumStrategy(BaseStrategy):
     strategy_id = "dual_filter_momentum"
     display_name = "雙重濾網動能 (均線趨勢 + RSI)"
+    short_name = "雙重濾網"
     description = "機構常見雙重濾網：僅在價格站穩長期均線（多頭趨勢）時，搭配 RSI 相對低檔拉回進場；跌破趨勢均線或 RSI 過熱時離場。"
     is_timing = True
 

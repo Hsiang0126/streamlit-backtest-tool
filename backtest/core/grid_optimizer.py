@@ -102,8 +102,7 @@ class GridOptimizer:
         if len(active) < 2:
             active = twr
 
-        start_v = float(active[0]) if active[0] > 0 else 1.0
-        end_rel = max(float(active[-1]) / start_v, 0.0)
+        end_rel = max(float(active[-1]), 0.0)
         eff_years = max(years * (len(active) / max(len(twr), 1)), 0.05)
         cagr = (end_rel ** (1.0 / eff_years) - 1.0) if end_rel > 0 else -1.0
 
@@ -222,11 +221,11 @@ class GridOptimizer:
         else:
             ratio = neighbor_median / best_val
             if ratio >= 0.80:
-                status = "🟢 穩健參數高原 (推薦)"
+                status = "穩健參數高原（推薦）"
             elif ratio >= 0.55:
-                status = "🟡 中等穩健區間"
+                status = "中等穩健區間"
             else:
-                status = "🔴 疑似孤島過擬合 (慎用)"
+                status = "疑似孤島過擬合（慎用）"
 
         return {
             "status": status,
@@ -402,6 +401,21 @@ class GridOptimizer:
 
         return cls._finalize_grid_results(matrix_dict, records, metric, "參數X (EMA快線)", "參數Y (EMA慢線)")
 
+    @staticmethod
+    def _oscillator_signals(vals: np.ndarray, buy_th: float, sell_th: float) -> np.ndarray:
+        """向量化前向持倉狀態推導：低於買入門檻轉 1、高於賣出門檻轉 0，其餘維持前值。"""
+        n = len(vals)
+        if n == 0:
+            return np.zeros(0, dtype=int)
+        valid = ~np.isnan(vals)
+        buy_m = valid & (vals < buy_th)
+        sell_m = valid & (~buy_m) & (vals > sell_th)
+
+        idx = np.arange(n, dtype=np.int64)
+        last_buy = np.maximum.accumulate(np.where(buy_m, idx, -1))
+        last_sell = np.maximum.accumulate(np.where(sell_m, idx, -1))
+        return (last_buy > last_sell).astype(int)
+
     # --- 3. RSI 尋優 (超賣買入 × 超買賣出) ---
     @classmethod
     def run_rsi_grid(
@@ -428,19 +442,9 @@ class GridOptimizer:
         sell_vals = list(range(sell_range[0], sell_range[1], sell_range[2]))
 
         records, matrix_dict = [], {s: {} for s in sell_vals}
-        n = len(rsi)
         for sell_th in sell_vals:
             for buy_th in buy_vals:
-                sig = np.zeros(n, dtype=int)
-                state = 0
-                for i in range(n):
-                    r = rsi[i]
-                    if not np.isnan(r):
-                        if r < buy_th:
-                            state = 1
-                        elif r > sell_th:
-                            state = 0
-                    sig[i] = state
+                sig = cls._oscillator_signals(rsi, buy_th, sell_th)
 
                 full_pos = np.roll(sig, 1)
                 full_pos[0] = 0
@@ -493,19 +497,9 @@ class GridOptimizer:
         sell_vals = list(range(sell_range[0], sell_range[1], sell_range[2]))
 
         records, matrix_dict = [], {s: {} for s in sell_vals}
-        n = len(k_vals)
         for sell_k in sell_vals:
             for buy_k in buy_vals:
-                sig = np.zeros(n, dtype=int)
-                state = 0
-                for i in range(n):
-                    k = k_vals[i]
-                    if not np.isnan(k):
-                        if k < buy_k:
-                            state = 1
-                        elif k > sell_k:
-                            state = 0
-                    sig[i] = state
+                sig = cls._oscillator_signals(k_vals, buy_k, sell_k)
 
                 full_pos = np.roll(sig, 1)
                 full_pos[0] = 0

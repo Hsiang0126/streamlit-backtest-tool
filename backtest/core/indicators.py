@@ -130,8 +130,10 @@ class IndicatorEngine:
         timeframe: str = "日線 (Daily)",
     ) -> Tuple[pd.Series, pd.Series]:
         f, s, sig_p = max(1, int(fast)), max(1, int(slow)), max(1, int(signal))
-        if f >= s:
-            f, s = min(f, s), max(f, s)
+        if f > s:
+            f, s = s, f
+        elif f == s:
+            s = f + 1
         price_series, is_weekly = cls._get_price_series(df, timeframe)
 
         ema_fast = price_series.ewm(span=f, adjust=False).mean()

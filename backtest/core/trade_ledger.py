@@ -205,7 +205,7 @@ class TradeLedger:
                         "出場價格": f"{curr_symbol} {exit_price_target:,.2f}",
                         "單筆報酬率": f"{pnl_pct:+.2%}",
                         "_raw_pnl_pct": pnl_pct,
-                        "狀態": "獲利 🟢" if pnl_pct > 0 else ("虧損 🔴" if pnl_pct < 0 else "平手 ⚪"),
+                        "狀態": "獲利" if pnl_pct > 0 else ("虧損" if pnl_pct < 0 else "平手"),
                     }
                 )
                 in_trade = False
@@ -225,7 +225,7 @@ class TradeLedger:
                     "出場價格": f"{curr_symbol} {last_close_target:,.2f}",
                     "單筆報酬率": f"{pnl_pct:+.2%}",
                     "_raw_pnl_pct": pnl_pct,
-                    "狀態": "持有中 🟡",
+                    "狀態": "持有中",
                 }
             )
 

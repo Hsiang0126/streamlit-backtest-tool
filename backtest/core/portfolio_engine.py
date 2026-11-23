@@ -10,7 +10,6 @@ yfinance (auto_adjust=False) 回傳的 Open/High/Low/Close 與 Dividends 皆已�
 故回測迴圈嚴禁再乘以 split 因子，避免造成 NVDA/0050 等拆股標的股數被重複放大之嚴重誤差。
 """
 from typing import Dict, Any, Optional, Tuple, List
-import re
 import pandas as pd
 import numpy as np
 from core.cost_model import CostModel, AssetCostStructure
@@ -225,7 +224,7 @@ class BacktestEngine:
                 cash += net_val
                 shares = 0.0
                 in_position = False
-                if pending_risk_exit:
+                if pending_risk_exit and raw_pos == 1:
                     stopped_out = True
                 pending_risk_exit = False
                 trade_count += 1
@@ -586,8 +585,7 @@ class BacktestEngine:
             if (t, "quote_currency") in aligned_panel.columns:
                 curr = str(aligned_panel[(t, "quote_currency")].iloc[0]).strip().upper()
             if not curr or curr in {"NAN", "NONE", ""}:
-                clean_t = str(t).strip().upper()
-                if clean_t.endswith((".TW", ".TWO")) or bool(re.match(r"^\d{4,6}[A-Z]?$", clean_t)):
+                if CostModel.is_taiwan_ticker(str(t)):
                     curr = "TWD"
                 else:
                     curr = "USD"
@@ -689,6 +687,7 @@ class BacktestEngine:
 
             is_initial = i == 0
             is_rebal = bool(rebal_arr[i]) if i > 0 else False
+            rebal_triggered_today = False
 
             if is_initial:
                 deploy_pool = cash
@@ -711,57 +710,59 @@ class BacktestEngine:
                             # 若第 1 天該市場休市，先掛單等待開市日買入，杜絕休市日成交
                             pending_rebalance_orders[t] = pending_rebalance_orders.get(t, 0.0) + alloc_amt
 
-            elif is_rebal:
-                pre_rebal_val = cash + sum(
-                    shares[t] * open_prices_native[t] * to_target_fx[t] for t in tickers
-                )
-                curr_weights = {
-                    t: (
-                        (shares[t] * open_prices_native[t] * to_target_fx[t]) / pre_rebal_val
-                        if pre_rebal_val > 0
-                        else 0.0
+            else:
+                if is_rebal:
+                    pre_rebal_val = cash + sum(
+                        shares[t] * open_prices_native[t] * to_target_fx[t] for t in tickers
                     )
-                    for t in tickers
-                }
-                curr_cash_w = (cash / pre_rebal_val) if pre_rebal_val > 0 else 0.0
+                    curr_weights = {
+                        t: (
+                            (shares[t] * open_prices_native[t] * to_target_fx[t]) / pre_rebal_val
+                            if pre_rebal_val > 0
+                            else 0.0
+                        )
+                        for t in tickers
+                    }
+                    curr_cash_w = (cash / pre_rebal_val) if pre_rebal_val > 0 else 0.0
 
-                deviations = [abs(curr_weights[t] - norm_weights[t]) for t in tickers]
-                if norm_cash_w > 0:
-                    deviations.append(abs(curr_cash_w - norm_cash_w))
-                max_dev = max(deviations) if pre_rebal_val > 0 else 0.0
+                    deviations = [abs(curr_weights[t] - norm_weights[t]) for t in tickers]
+                    if norm_cash_w > 0:
+                        deviations.append(abs(curr_cash_w - norm_cash_w))
+                    max_dev = max(deviations) if pre_rebal_val > 0 else 0.0
 
-                if max_dev > tolerance_band:
-                    pending_rebalance_orders.clear()
-                    for t in tickers:
-                        target_val = pre_rebal_val * norm_weights[t]
-                        curr_val = shares[t] * open_prices_native[t] * to_target_fx[t]
-                        pending_rebalance_orders[t] = target_val - curr_val
-                    triggered_rebalance_count += 1
-                    rebalance_dates.append(pd.Timestamp(dt))
-                else:
-                    skipped_rebalance_count += 1
-                    # 依實際偏離金額與實際標的費率估算省下之雙邊調倉手續費/稅金/滑價
-                    for t in tickers:
-                        diff_amt = abs(pre_rebal_val * norm_weights[t] - shares[t] * open_prices_native[t] * to_target_fx[t])
-                        if diff_amt > cls.MIN_REBAL_ORDER_THRESHOLD:
-                            c = cost_dict[t]
-                            rate = c.fee_rate + c.slippage_rate + (
-                                c.tax_rate if shares[t] * open_prices_native[t] * to_target_fx[t] > pre_rebal_val * norm_weights[t] else 0.0
-                            )
-                            estimated_saved_fees += diff_amt * rate
+                    if max_dev > tolerance_band:
+                        pending_rebalance_orders.clear()
+                        for t in tickers:
+                            target_val = pre_rebal_val * norm_weights[t]
+                            curr_val = shares[t] * open_prices_native[t] * to_target_fx[t]
+                            pending_rebalance_orders[t] = target_val - curr_val
+                        triggered_rebalance_count += 1
+                        rebalance_dates.append(pd.Timestamp(dt))
+                        rebal_triggered_today = True
+                    else:
+                        skipped_rebalance_count += 1
+                        # 依實際偏離金額與實際標的費率估算省下之雙邊調倉手續費/稅金/滑價
+                        for t in tickers:
+                            diff_amt = abs(pre_rebal_val * norm_weights[t] - shares[t] * open_prices_native[t] * to_target_fx[t])
+                            if diff_amt > cls.MIN_REBAL_ORDER_THRESHOLD:
+                                c = cost_dict[t]
+                                rate = c.fee_rate + c.slippage_rate + (
+                                    c.tax_rate if shares[t] * open_prices_native[t] * to_target_fx[t] > pre_rebal_val * norm_weights[t] else 0.0
+                                )
+                                estimated_saved_fees += diff_amt * rate
 
-            elif flow > 0 and cash > cls.MIN_ORDER_THRESHOLD:
-                # 計算可供投資之額度：保留目標現金儲備 (pre_val * norm_cash_w)，僅將超額現金投入風險資產
-                pre_open_val = cash + sum(
-                    shares[t] * open_prices_native[t] * to_target_fx[t] for t in tickers
-                )
-                target_cash_floor = pre_open_val * norm_cash_w
-                investable = max(0.0, cash - target_cash_floor) if norm_cash_w > 0 else cash
-                if investable > cls.MIN_ORDER_THRESHOLD and norm_risky_sum > 0:
-                    for t in tickers:
-                        alloc_amt = investable * risky_rel_weights[t]
-                        if alloc_amt > cls.MIN_ORDER_THRESHOLD:
-                            pending_rebalance_orders[t] = pending_rebalance_orders.get(t, 0.0) + alloc_amt
+                if (not rebal_triggered_today) and flow > 0 and cash > cls.MIN_ORDER_THRESHOLD:
+                    # 計算可供投資之額度：保留目標現金儲備 (pre_val * norm_cash_w)，僅將超額現金投入風險資產
+                    pre_open_val = cash + sum(
+                        shares[t] * open_prices_native[t] * to_target_fx[t] for t in tickers
+                    )
+                    target_cash_floor = pre_open_val * norm_cash_w
+                    investable = max(0.0, cash - target_cash_floor) if norm_cash_w > 0 else cash
+                    if investable > cls.MIN_ORDER_THRESHOLD and norm_risky_sum > 0:
+                        for t in tickers:
+                            alloc_amt = investable * risky_rel_weights[t]
+                            if alloc_amt > cls.MIN_ORDER_THRESHOLD:
+                                pending_rebalance_orders[t] = pending_rebalance_orders.get(t, 0.0) + alloc_amt
 
             # 4. 統一撮合所有掛單（先賣出釋放現金，再執行買入；休市標的自留待隔日開市成交）
             if pending_rebalance_orders:
@@ -784,7 +785,9 @@ class BacktestEngine:
                             asset_cum_sold[t] += cash_recv
                             trade_count += 1
                         del pending_rebalance_orders[t]
-                    elif abs(diff) <= cls.MIN_REBAL_ORDER_THRESHOLD:
+                    elif diff < 0 and abs(diff) <= cls.MIN_REBAL_ORDER_THRESHOLD:
+                        del pending_rebalance_orders[t]
+                    elif 0 <= diff <= cls.MIN_ORDER_THRESHOLD:
                         del pending_rebalance_orders[t]
 
                 for t in list(pending_rebalance_orders.keys()):

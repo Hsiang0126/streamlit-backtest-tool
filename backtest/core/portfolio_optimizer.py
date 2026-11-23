@@ -7,9 +7,9 @@
 4. 回傳相關係數矩陣 (corr_matrix) 與各單一資產年化報酬/波動率 (asset_stats)。
 """
 from typing import Dict, Any, Tuple, Optional
-import re
 import pandas as pd
 import numpy as np
+from core.cost_model import CostModel
 from core.portfolio_engine import BacktestEngine
 
 
@@ -22,8 +22,7 @@ class PortfolioOptimizer:
             c = str(aligned_panel[(ticker, "quote_currency")].iloc[0]).strip().upper()
             if c and c not in {"NAN", "NONE"}:
                 return c
-        clean_t = str(ticker).strip().upper()
-        if clean_t.endswith((".TW", ".TWO")) or bool(re.match(r"^\d{4,6}[A-Z]?$", clean_t)):
+        if CostModel.is_taiwan_ticker(str(ticker)):
             return "TWD"
         return "USD"
 

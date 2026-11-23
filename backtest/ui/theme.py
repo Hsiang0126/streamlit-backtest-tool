@@ -340,10 +340,6 @@ def apply_editorial_theme():
     st.markdown(editorial_css, unsafe_allow_html=True)
 
 
-# 保留舊函式名稱相容性
-apply_dark_theme = apply_editorial_theme
-
-
 def _format_inline_markdown(text: str) -> str:
     """安全轉換行內 Markdown (**粗體** 與 `行內代碼`) 為 HTML，同時防止未跳脫標籤注入。"""
     escaped = html.escape(str(text))
@@ -388,10 +384,6 @@ def render_page_header(
         "</header>"
     )
     st.markdown(header_html, unsafe_allow_html=True)
-
-
-def render_metric_card(title: str, value: str, sub: str = "", state: str = "neutral"):
-    st.markdown(_build_metric_card_html(title, value, sub, state), unsafe_allow_html=True)
 
 
 def render_metric_grid(cards: List[Dict[str, str]]):

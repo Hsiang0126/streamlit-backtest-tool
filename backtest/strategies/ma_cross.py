@@ -13,6 +13,7 @@ from core.indicators import IndicatorEngine
 class PriceSMABreakoutStrategy(BaseStrategy):
     strategy_id = "price_sma_breakout"
     display_name = "價格突破均線買入/跌破賣出"
+    short_name = "突破均線"
     description = "趨勢追隨策略：站上均線買入持有，跌破均線獲利了結清倉。支援日線與週線。"
     is_timing = True
 
@@ -51,6 +52,7 @@ class PriceSMABreakoutStrategy(BaseStrategy):
 class SMACrossoverStrategy(BaseStrategy):
     strategy_id = "sma_crossover"
     display_name = "SMA 雙均線交叉 (黃金交叉)"
+    short_name = "SMA 雙均線"
     description = "經典雙均線策略：短期均線向上突破長期均線買入，跌破賣出。支援日線與週線。"
     is_timing = True
 
@@ -89,8 +91,10 @@ class SMACrossoverStrategy(BaseStrategy):
         fast = int(params.get("fast", 20))
         slow = int(params.get("slow", 60))
         tf = params.get("timeframe", "日線 (Daily)")
-        if fast >= slow:
-            fast, slow = min(fast, slow), max(fast, slow)
+        if fast > slow:
+            fast, slow = slow, fast
+        elif fast == slow:
+            slow = fast + 1
 
         fast_ma = IndicatorEngine.calculate_ma(df, fast, tf)
         slow_ma = IndicatorEngine.calculate_ma(df, slow, tf)
@@ -102,6 +106,7 @@ class SMACrossoverStrategy(BaseStrategy):
 class EMACrossoverStrategy(BaseStrategy):
     strategy_id = "ema_crossover"
     display_name = "EMA 指數雙均線交叉"
+    short_name = "EMA 雙均線"
     description = "靈敏趨勢跟隨策略：以指數移動平均 (EMA) 權重放大近期價格變化，較 SMA 更早捕捉多空轉折。支援日線與週線。"
     is_timing = True
 
@@ -140,8 +145,10 @@ class EMACrossoverStrategy(BaseStrategy):
         fast = int(params.get("fast", 12))
         slow = int(params.get("slow", 26))
         tf = params.get("timeframe", "日線 (Daily)")
-        if fast >= slow:
-            fast, slow = min(fast, slow), max(fast, slow)
+        if fast > slow:
+            fast, slow = slow, fast
+        elif fast == slow:
+            slow = fast + 1
 
         fast_ema = IndicatorEngine.calculate_ema(df, fast, tf)
         slow_ema = IndicatorEngine.calculate_ema(df, slow, tf)

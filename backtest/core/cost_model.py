@@ -19,9 +19,15 @@ class CostModel:
 
     TW_BASE_FEE_RATE = 0.001425
 
+    @staticmethod
+    def is_taiwan_ticker(ticker: str) -> bool:
+        """判定是否為台股上市櫃代碼 (支援 4~6 碼及含英文字尾，如 2330, 0050, 00631L, 00679B, 00981A, 2881A)。"""
+        clean = str(ticker).strip().upper()
+        return clean.endswith((".TW", ".TWO")) or bool(re.match(r"^\d{4,6}[A-Z]?$", clean))
+
     @classmethod
     def _is_taiwan_symbol(cls, clean: str) -> bool:
-        return clean.endswith((".TW", ".TWO")) or bool(re.match(r"^\d{4,6}[A-Z0-9]?$", clean))
+        return cls.is_taiwan_ticker(clean)
 
     @classmethod
     def _is_tw_bond_etf(cls, symbol_core: str) -> bool:

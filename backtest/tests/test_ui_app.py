@@ -307,6 +307,34 @@ class TestStreamlitUI(unittest.TestCase):
             self._assert_clean_run(at, "custom start 2000-01-01")
             self.assertIn("2000-01-01", seen_starts)
 
+    def test_strategy_short_names_scenario_auto_balance_and_grid_auto_add(self):
+        # 1. 所有註冊策略皆具備簡潔短名（手機排行榜不致撐爆寬度）
+        for disp, cls in StrategyRegistry.get_all().items():
+            short = StrategyRegistry.get_short_name(disp)
+            self.assertTrue(short)
+            self.assertLessEqual(len(short), 10, f"short_name too long: {short}")
+
+        with patch("core.data_engine.DataEngine.load_aligned_market_data", side_effect=_fake_load_aligned_market_data):
+            at = AppTest.from_file(str(ROOT_DIR / "app.py"), default_timeout=45)
+            at.run()
+            self._assert_clean_run(at, "initial load")
+
+            # 2. Bug #5: 切換到「退休股債全天候」後 Tab 2 自動配平 100%，不應產生權重不合警告
+            at.sidebar.selectbox(key="sb_scenario").set_value("退休股債全天候 (0050 + VT + 00679B)").run()
+            self._assert_clean_run(at, "switch to retirement scenario")
+            self.assertEqual(len(at.warning), 0, f"Unexpected warnings after scenario switch: {[w.value for w in at.warning]}")
+
+            # 3. Bug #8: 對不在預設清單內的 MACD 執行 2D 尋優並套用，應自動加入 pk_selected_strats
+            macd_disp = StrategyRegistry.get_display_name_by_id("macd_strategy")
+            self.assertNotIn(macd_disp, list(at.multiselect(key="pk_selected_strats").value))
+            sb_opt = _find_selectbox(at, key="pk_grid_opt_strategy")
+            sb_opt.set_value("MACD 柱狀圖/交叉 (EMA快線 × EMA慢線)").run()
+            _find_button(at, key="btn_run_generic_grid").click().run()
+            self._assert_clean_run(at, "run macd grid")
+            _find_button(at, key="btn_apply_best_grid").click().run()
+            self._assert_clean_run(at, "apply macd grid")
+            self.assertIn(macd_disp, list(at.multiselect(key="pk_selected_strats").value))
+
 
 if __name__ == "__main__":
     unittest.main()

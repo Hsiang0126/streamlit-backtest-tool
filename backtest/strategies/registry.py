@@ -30,6 +30,20 @@ class StrategyRegistry:
     def get_all(cls) -> Dict[str, Type[BaseStrategy]]:
         return dict(cls._strategies)
 
+    @classmethod
+    def get_short_name(cls, display_name: str) -> str:
+        strat = cls._strategies.get(display_name)
+        if strat is not None and strat.short_name:
+            return strat.short_name
+        return display_name
+
+    @classmethod
+    def get_display_name_by_id(cls, strategy_id: str) -> Optional[str]:
+        for disp, strat in cls._strategies.items():
+            if strat.strategy_id == strategy_id:
+                return disp
+        return None
+
 
 def register_strategy(cls: Type[BaseStrategy]) -> Type[BaseStrategy]:
     """裝飾器語法糖：@register_strategy"""

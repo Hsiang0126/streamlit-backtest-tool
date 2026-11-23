@@ -31,7 +31,7 @@ from ui.components_chart import (
 )
 
 
-@st.cache_data(show_spinner=False, ttl=1800)
+@st.cache_data(show_spinner=False, ttl=1800, max_entries=16)
 def _cached_mpt_optimize(
     aligned_panel: pd.DataFrame,
     aligned_fx: pd.Series,
@@ -42,6 +42,49 @@ def _cached_mpt_optimize(
         aligned_fx=aligned_fx,
         target_currency=target_currency,
     )
+
+
+@st.cache_data(show_spinner=False, ttl=1800, max_entries=24)
+def _cached_multi_asset_run(
+    aligned_panel: pd.DataFrame,
+    aligned_fx: pd.Series,
+    weights_tuple: Tuple[Tuple[str, float], ...],
+    initial_capital: float,
+    monthly_inflow: float,
+    rebalance_freq: str,
+    costs_tuple: Tuple[Tuple[str, float, float, float], ...],
+    target_currency: str,
+    curr_symbol: str,
+    tolerance_band: float,
+    cash_reserve_weight: float,
+    cash_annual_rate: float,
+    invest_day_one: bool,
+):
+    cost_dict = {
+        t: AssetCostStructure(fee_rate=f, tax_rate=tx, slippage_rate=sl)
+        for t, f, tx, sl in costs_tuple
+    }
+    res_df, attribution, rebal_stats = BacktestEngine.run_multi_asset_portfolio(
+        aligned_panel=aligned_panel,
+        aligned_fx=aligned_fx,
+        target_weights=dict(weights_tuple),
+        initial_capital=initial_capital,
+        monthly_inflow=monthly_inflow,
+        rebalance_freq=rebalance_freq,
+        cost_dict=cost_dict,
+        target_currency=target_currency,
+        tolerance_band=tolerance_band,
+        cash_reserve_weight=cash_reserve_weight,
+        cash_annual_rate=cash_annual_rate,
+        invest_day_one=invest_day_one,
+    )
+    m = PerformanceMetrics.evaluate(res_df, curr_symbol=curr_symbol, initial_capital=initial_capital)
+    return res_df, attribution, rebal_stats, m
+
+
+@st.cache_data(show_spinner=False, ttl=1800, max_entries=12)
+def _df_to_csv(df: pd.DataFrame) -> str:
+    return df.to_csv(index=True, encoding="utf-8-sig")
 
 
 def _generate_diagnosis_bullets(
@@ -214,11 +257,20 @@ def render_portfolio_rebalance_tab(
                 st.session_state[f"weight_input_{t}"] = float(new_w[t])
             st.rerun()
 
-        # 若標的組合改變或未初始化，給定等權重初始值
-        eq_w = round((100.0 - cash_weight_pct) / len(tickers), 1)
-        for t in tickers:
-            if f"weight_input_{t}" not in st.session_state:
-                st.session_state[f"weight_input_{t}"] = float(eq_w)
+        # 若標的組合改變或尚未初始化，自動依目前現金比例配平風險標的至剛好 100%
+        tickers_sig = tuple(tickers)
+        if st.session_state.get("_port_last_tickers") != tickers_sig or any(
+            f"weight_input_{t}" not in st.session_state for t in tickers
+        ):
+            target_risky = max(0.0, 100.0 - float(cash_weight_pct))
+            eq_w = round(target_risky / len(tickers), 1)
+            init_weights = {t: float(eq_w) for t in tickers}
+            diff = round(target_risky - sum(init_weights.values()), 1)
+            if tickers:
+                init_weights[tickers[0]] = round(init_weights[tickers[0]] + diff, 1)
+            for t, w_val in init_weights.items():
+                st.session_state[f"weight_input_{t}"] = float(w_val)
+            st.session_state["_port_last_tickers"] = tickers_sig
 
         raw_weights: Dict[str, float] = {}
         for start_i in range(0, len(tickers), 3):
@@ -252,43 +304,48 @@ def render_portfolio_rebalance_tab(
         t: (cost_override if cost_override else CostModel.get_default_costs(t, tw_fee_discount=tw_fee_discount))
         for t in tickers
     }
+    weights_tuple = tuple(sorted(target_weights.items()))
+    costs_tuple = tuple(
+        (t, float(cost_dict[t].fee_rate), float(cost_dict[t].tax_rate), float(cost_dict[t].slippage_rate))
+        for t in sorted(tickers)
+    )
 
     with st.spinner("正在運算多資產配置軌跡、複利活存與基準對照組..."):
-        res_df, attribution, rebal_stats = BacktestEngine.run_multi_asset_portfolio(
+        res_df, attribution, rebal_stats, m = _cached_multi_asset_run(
             aligned_panel=aligned_panel,
             aligned_fx=aligned_fx,
-            target_weights=target_weights,
+            weights_tuple=weights_tuple,
             initial_capital=initial_capital,
             monthly_inflow=monthly_inflow,
             rebalance_freq=rebal_freq,
-            cost_dict=cost_dict,
+            costs_tuple=costs_tuple,
             target_currency=target_currency,
+            curr_symbol=curr_symbol,
             tolerance_band=tolerance_band,
             cash_reserve_weight=cash_reserve_w,
             cash_annual_rate=cash_rate,
             invest_day_one=invest_day_one,
         )
-        m = PerformanceMetrics.evaluate(res_df, curr_symbol=curr_symbol, initial_capital=initial_capital)
 
         # 自動計算 Buy & Drift 對照組 (僅當目前非不調倉模式時)
         drift_df = None
         m_drift = {}
         if "Buy & Drift" not in rebal_freq:
-            drift_df, _, _ = BacktestEngine.run_multi_asset_portfolio(
+            drift_df, _, _, m_drift = _cached_multi_asset_run(
                 aligned_panel=aligned_panel,
                 aligned_fx=aligned_fx,
-                target_weights=target_weights,
+                weights_tuple=weights_tuple,
                 initial_capital=initial_capital,
                 monthly_inflow=monthly_inflow,
                 rebalance_freq="不進行再平衡 (Buy & Drift)",
-                cost_dict=cost_dict,
+                costs_tuple=costs_tuple,
                 target_currency=target_currency,
+                curr_symbol=curr_symbol,
                 tolerance_band=0.0,
                 cash_reserve_weight=cash_reserve_w,
                 cash_annual_rate=cash_rate,
                 invest_day_one=invest_day_one,
             )
-            m_drift = PerformanceMetrics.evaluate(drift_df, curr_symbol=curr_symbol, initial_capital=initial_capital)
 
     # 4 個清爽子分頁
     sub_ov, sub_attr, sub_mpt, sub_month = st.tabs(
@@ -364,7 +421,7 @@ def render_portfolio_rebalance_tab(
             dd_map["對照組：不調倉 (Buy & Drift)"] = PerformanceMetrics.calculate_drawdown_series(drift_df)
         render_drawdown_chart(dd_map, champion_name="目前配置 (再平衡)", height=320)
 
-        csv_port = res_df.to_csv(index=True, encoding="utf-8-sig")
+        csv_port = _df_to_csv(res_df)
         st.download_button(
             label="下載投資組合每日淨值與明細 (CSV)",
             data=csv_port,

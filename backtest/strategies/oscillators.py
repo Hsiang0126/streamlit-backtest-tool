@@ -13,6 +13,7 @@ from core.indicators import IndicatorEngine
 class RSIStrategy(BaseStrategy):
     strategy_id = "rsi_strategy"
     display_name = "RSI 超買超賣"
+    short_name = "RSI 震盪"
     description = "均值回歸策略：RSI 低於超賣區買入，高於超買區賣出獲利了結。支援日線與週線。"
     is_timing = True
 
@@ -44,6 +45,7 @@ class RSIStrategy(BaseStrategy):
 class MACDStrategy(BaseStrategy):
     strategy_id = "macd_strategy"
     display_name = "MACD 柱狀圖/交叉"
+    short_name = "MACD 交叉"
     description = "動能趨勢策略：MACD 快線由下往上穿越慢線/訊號線買入，跌破賣出。支援日線與週線。"
     is_timing = True
 
@@ -71,6 +73,7 @@ class MACDStrategy(BaseStrategy):
 class KDStrategy(BaseStrategy):
     strategy_id = "kd_strategy"
     display_name = "KD 隨機指標"
+    short_name = "KD 指標"
     description = "擺盪轉折策略：K 值低檔黃金交叉買入，高檔超買賣出。支援日線與週線。"
     is_timing = True
 
