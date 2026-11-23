@@ -327,6 +327,7 @@ def apply_editorial_theme():
     }
     .hm-table {
         width: 100%;
+        margin: 0 !important;
         border-collapse: separate;
         border-spacing: 0;
         font-variant-numeric: tabular-nums;
@@ -360,12 +361,15 @@ def apply_editorial_theme():
         left: 0;
         z-index: 2;
         background-color: var(--bg-subtle);
+        background-clip: border-box;
         color: var(--text-primary);
         font-weight: 600;
         padding: 8px 10px;
         text-align: left;
+        border-left: none !important;
         border-right: 1px solid var(--border-strong);
         border-bottom: 1px solid var(--border-subtle);
+        box-shadow: -6px 0 0 0 var(--bg-subtle), 2px 0 6px -4px rgba(15, 23, 42, 0.12);
         min-width: 56px;
         white-space: nowrap;
     }
@@ -402,6 +406,7 @@ def apply_editorial_theme():
     }
     .lb-table {
         width: 100%;
+        margin: 0 !important;
         border-collapse: separate;
         border-spacing: 0;
         font-variant-numeric: tabular-nums;
@@ -438,14 +443,17 @@ def apply_editorial_theme():
         z-index: 2;
         text-align: left;
         background-color: var(--bg-surface);
+        background-clip: border-box;
         font-weight: 600;
+        border-left: none !important;
         border-right: 1px solid var(--border-subtle);
-        box-shadow: 2px 0 6px -4px rgba(15, 23, 42, 0.12);
+        box-shadow: -6px 0 0 0 var(--bg-surface), 2px 0 6px -4px rgba(15, 23, 42, 0.12);
     }
     .lb-table thead th.lb-sticky {
         z-index: 3;
         background-color: var(--bg-subtle);
         border-right: 1px solid var(--border-strong);
+        box-shadow: -6px 0 0 0 var(--bg-subtle), 2px 0 6px -4px rgba(15, 23, 42, 0.12);
     }
     .lb-table tbody tr.lb-champ td {
         background-color: #F2F6FB;
@@ -454,6 +462,7 @@ def apply_editorial_theme():
         background-color: #E8F0F9;
         color: var(--accent-primary);
         font-weight: 700;
+        box-shadow: -6px 0 0 0 #E8F0F9, 2px 0 6px -4px rgba(15, 23, 42, 0.12);
     }
     .lb-table tbody tr:not(.lb-champ):hover td {
         background-color: #F8FAFC;

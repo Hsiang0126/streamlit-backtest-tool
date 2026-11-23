@@ -25,7 +25,7 @@ from ui.components_chart import (
     _build_monthly_heatmap_html,
     _monthly_cell_colors,
 )
-from ui.theme import _build_leaderboard_html, _format_inline_markdown
+from ui.theme import apply_editorial_theme, _build_leaderboard_html, _format_inline_markdown
 
 
 def _make_market_df(ticker: str, seed: int, periods: int = 420) -> pd.DataFrame:
@@ -398,6 +398,16 @@ class TestStreamlitUI(unittest.TestCase):
         self.assertIs(fig_ts.layout.dragmode, False)
         self.assertIs(fig_ts.layout.xaxis.fixedrange, False)
         self.assertIs(fig_ts.layout.yaxis.fixedrange, True)
+
+        with patch("ui.theme.st.markdown") as mock_md:
+            apply_editorial_theme()
+        mock_md.assert_called_once()
+        css_emitted = mock_md.call_args.args[0]
+        self.assertIn("margin: 0 !important;", css_emitted)
+        self.assertIn("border-left: none !important;", css_emitted)
+        self.assertIn("-6px 0 0 0 var(--bg-subtle)", css_emitted)
+        self.assertIn("-6px 0 0 0 var(--bg-surface)", css_emitted)
+        self.assertIn("-6px 0 0 0 #E8F0F9", css_emitted)
 
 
 if __name__ == "__main__":
