@@ -2,6 +2,7 @@
 Streamlit 端到端介面與互動測試 (AppTest E2E Suite)
 測試 app.py 與雙核心分頁在真實 Streamlit 1.67 + Plotly 7.1 執行環境下的所有互動操作。
 """
+import datetime
 import sys
 import unittest
 import warnings
@@ -17,6 +18,7 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from core.data_engine import DataEngine
 from strategies.registry import StrategyRegistry
+from ui.theme import _format_inline_markdown
 
 
 def _make_market_df(ticker: str, seed: int, periods: int = 420) -> pd.DataFrame:
@@ -238,22 +240,72 @@ class TestStreamlitUI(unittest.TestCase):
             index=dates,
         )
 
-        # 模擬批次下載時 00679B.TW 為空，fallback 抓取 00679B.TWO 成功
+        # 1) 00679B 直接正規化為 00679B.TWO 並在批次下載成功載入（無多餘警告）
+        # 2) 一般上櫃股 8069 先試 8069.TW 為空，自動切換至 8069.TWO 載入並發出一筆切換通知
+        # 3) 無效代碼 9999 在 .TW 與 .TWO 皆無資料，僅回傳一筆去重後的失敗警告
+        self.assertEqual(DataEngine.normalize_ticker("00679B"), "00679B.TWO")
+        self.assertEqual(DataEngine.normalize_ticker("8069"), "8069.TW")
+
         def mock_yf_download(tickers, **kwargs):
             if isinstance(tickers, list):
-                empty_tw = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Adj Close"])
-                return pd.concat({"00679B.TW": empty_tw, "USDTWD=X": df_fx}, axis=1)
-            if tickers == "00679B.TWO":
+                empty_df = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Adj Close"])
+                return pd.concat(
+                    {
+                        "00679B.TWO": df_two,
+                        "8069.TW": empty_df,
+                        "9999.TW": empty_df,
+                        "USDTWD=X": df_fx,
+                    },
+                    axis=1,
+                )
+            if tickers == "8069.TWO":
                 return df_two
             return pd.DataFrame()
 
         with patch("core.data_engine.yf.download", side_effect=mock_yf_download):
             indiv, panel, fx_out, sym, warns = DataEngine.load_aligned_market_data(
-                ["00679B"], "2024-02-01", "2024-03-31", "TWD"
+                ["00679B", "8069", "9999"], "2024-02-01", "2024-03-31", "TWD"
             )
+
         self.assertIn("00679B", indiv)
+        self.assertIn("8069", indiv)
+        self.assertNotIn("9999", indiv)
         self.assertFalse(indiv["00679B"].empty)
-        self.assertTrue(any("00679B.TWO" in w for w in warns))
+        self.assertFalse(indiv["8069"].empty)
+        self.assertFalse(any("00679B" in w for w in warns))
+        self.assertTrue(any("8069.TWO" in w for w in warns))
+        warns_9999 = [w for w in warns if "9999" in w]
+        self.assertEqual(len(warns_9999), 1)
+
+    def test_editorial_markdown_and_long_horizon_ui(self):
+        formatted = _format_inline_markdown("測試 **粗體** 與 `code` <script>alert(1)</script>")
+        self.assertIn("<strong>粗體</strong>", formatted)
+        self.assertIn("<code>code</code>", formatted)
+        self.assertNotIn("<script>", formatted)
+        self.assertIn("&lt;script&gt;", formatted)
+
+        seen_starts = []
+
+        def tracking_fake_loader(tickers, start_date, end_date, target_currency="TWD"):
+            seen_starts.append(start_date)
+            return _fake_load_aligned_market_data(tickers, start_date, end_date, target_currency)
+
+        with patch("core.data_engine.DataEngine.load_aligned_market_data", side_effect=tracking_fake_loader):
+            at = AppTest.from_file(str(ROOT_DIR / "app.py"), default_timeout=45)
+            at.run()
+            self._assert_clean_run(at, "initial load")
+
+            for span in ["近 20 年", "近 30 年", "最長可用歷史 (Max)"]:
+                at.sidebar.selectbox(key="sb_timespan").set_value(span).run()
+                self._assert_clean_run(at, f"timespan={span}")
+
+            self.assertIn("1980-01-01", seen_starts)
+
+            at.sidebar.selectbox(key="sb_timespan").set_value("自訂日期").run()
+            self._assert_clean_run(at, "timespan=自訂日期")
+            at.sidebar.date_input(key="sb_custom_start").set_value(datetime.date(2000, 1, 1)).run()
+            self._assert_clean_run(at, "custom start 2000-01-01")
+            self.assertIn("2000-01-01", seen_starts)
 
 
 if __name__ == "__main__":

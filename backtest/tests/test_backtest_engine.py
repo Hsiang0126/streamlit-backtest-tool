@@ -536,6 +536,45 @@ class TestBacktestSystem(unittest.TestCase):
         pt = PortfolioOptimizer.evaluate_custom_weights(stats, {"0050": 0.5, "QQQ": 0.5})
         self.assertIsNotNone(pt)
 
+    def test_long_20_year_horizon_and_weekly_candlestick(self):
+        from ui.components_chart import render_candlestick_with_markers
+
+        df_long = _make_synthetic_df(
+            start="2004-01-02",
+            periods=5500,
+            user_start="2005-01-03",
+            quote_currency="USD",
+            daily_growth=0.0003,
+            amplitude=0.04,
+        )
+        cost = CostModel.get_default_costs("SPY")
+        res = BacktestEngine.run_single_strategy(
+            df_long,
+            "SMA 雙均線交叉 (黃金交叉)",
+            {"timeframe": "日線 (Daily)", "fast": 20, "slow": 60},
+            initial_capital=10000.0,
+            monthly_inflow=500.0,
+            cost_struct=cost,
+            target_currency="USD",
+        )
+        m = PerformanceMetrics.evaluate(res, "$", 10000.0)
+        self.assertTrue(np.isfinite(m["_raw_cagr"]))
+        self.assertTrue(np.isfinite(m["_raw_sharpe"]))
+        self.assertTrue(np.isfinite(m["_raw_xirr"]))
+        monthly = PerformanceMetrics.calculate_monthly_returns(res)
+        self.assertGreaterEqual(len(monthly), 20)
+
+        captured_figs = []
+        with patch("ui.components_chart.st.plotly_chart", side_effect=lambda fig, **kw: captured_figs.append(fig)):
+            render_candlestick_with_markers(res, res["position"], "SPY", curr_symbol="$", resample_weekly=True)
+
+        self.assertEqual(len(captured_figs), 1)
+        fig = captured_figs[0]
+        candle_trace = fig.data[0]
+        # 21+ years of weekly bars (~1100 weeks), far lighter than ~5240 daily bars
+        self.assertLess(len(candle_trace.x), 1400)
+        self.assertGreater(len(candle_trace.x), 900)
+
     def test_ui_files_syntax_ast(self):
         py_files = [
             ROOT_DIR / "app.py",

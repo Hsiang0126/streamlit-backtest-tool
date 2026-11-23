@@ -20,8 +20,9 @@ from core.portfolio_engine import BacktestEngine
 from core.trade_ledger import TradeLedger
 from core.grid_optimizer import GridOptimizer
 from strategies.registry import StrategyRegistry
-from ui.theme import render_metric_card, render_insight_panel
+from ui.theme import render_metric_grid, render_insight_panel
 from ui.components_chart import (
+    PLOTLY_CONFIG,
     _apply_terminal_layout,
     render_equity_comparison_chart,
     render_drawdown_chart,
@@ -79,11 +80,11 @@ def _render_risk_return_scatter(df_results: pd.DataFrame, champion_name: str):
                     size=16 if is_champ else 11,
                     symbol="star" if is_champ else "circle",
                     color=PALETTE[idx % len(PALETTE)],
-                    line=dict(color="#ffffff", width=1.2 if is_champ else 0.6),
+                    line=dict(color="#FFFFFF", width=1.4 if is_champ else 0.8),
                 ),
                 text=[s_name.split(" ")[0]],
                 textposition="top center",
-                textfont=dict(size=10, color="#cbd5e1"),
+                textfont=dict(size=10, color="#334155"),
                 hovertemplate=(
                     f"{s_name}<br>最大回撤 (MDD): %{{x:.2f}}%<br>"
                     f"年化報酬 (CAGR): %{{y:+.2f}}%<br>"
@@ -96,10 +97,11 @@ def _render_risk_return_scatter(df_results: pd.DataFrame, champion_name: str):
         fig,
         x_title="最大歷史回撤幅度 |MDD| (%) [越左越抗跌]",
         y_title="年化複合報酬 CAGR (%) [越上越賺]",
-        height=380,
+        height=390,
         hovermode="closest",
+        show_legend_bottom=True,
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
 
 
 def render_strategy_pk_tab(
@@ -114,7 +116,7 @@ def render_strategy_pk_tab(
     invest_day_one: bool = False,
 ):
     if not individual_dict:
-        st.info("👈 請在側邊欄選擇標的並載入市場數據。")
+        st.info("請在側邊欄選擇標的並載入市場數據。")
         return
 
     # 若有上輪觸發的一鍵套用最佳參數，於對應參數元件渲染前先行寫入 session_state
@@ -148,12 +150,24 @@ def render_strategy_pk_tab(
         )
 
     df_target = individual_dict[target_ticker]
+    active_target = (
+        df_target[df_target["user_start_idx"] == True]
+        if "user_start_idx" in df_target.columns and (df_target["user_start_idx"] == True).any()
+        else df_target
+    )
+    t_start_str = pd.Timestamp(active_target.index.min()).strftime("%Y-%m-%d")
+    t_end_str = pd.Timestamp(active_target.index.max()).strftime("%Y-%m-%d")
+    t_years = max(0.0, (pd.Timestamp(active_target.index.max()) - pd.Timestamp(active_target.index.min())).days / 365.25)
+
     cost_struct = (
         cost_override
         if cost_override
         else CostModel.get_default_costs(target_ticker, tw_fee_discount=tw_fee_discount)
     )
-    st.caption(f"適用成本模型 — {CostModel.describe_cost(target_ticker, cost_struct)}")
+    st.caption(
+        f"適用成本模型 — {CostModel.describe_cost(target_ticker, cost_struct)} ｜ "
+        f"有效區間：{t_start_str} ~ {t_end_str}（約 {t_years:.1f} 年 · {len(active_target):,} 個交易日）"
+    )
 
     if not selected_strats:
         st.warning("請至少勾選一種策略進行評估。")
@@ -191,7 +205,7 @@ def render_strategy_pk_tab(
             st.markdown(f"**{strat_name}** — *{strat_cls.description}*")
             params: Dict[str, Any] = {}
             if specs:
-                cols = st.columns(min(len(specs), 4))
+                cols = st.columns(min(len(specs), 3))
                 for idx, spec in enumerate(specs):
                     with cols[idx % len(cols)]:
                         key_id = f"{target_ticker}_{strat_cls.strategy_id}_{spec.key}"
@@ -285,44 +299,43 @@ def render_strategy_pk_tab(
     # 4 個清爽子分頁
     sub_overview, sub_monthly, sub_ledger, sub_grid = st.tabs(
         [
-            "📊 總覽與成長曲線",
-            "🗓️ 月度報酬與風險散佈",
-            "📖 交易帳本與 K 線圖",
-            "🔥 2D 參數高原尋優",
+            "總覽與成長曲線",
+            "月度報酬與風險分佈",
+            "交易帳本與 K 線圖",
+            "2D 參數高原尋優",
         ]
     )
 
     # --- 子分頁 1：總覽與成長曲線 ---
     with sub_overview:
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            render_metric_card(
-                "冠軍實賺淨利潤",
-                f"{curr_symbol} {champion_profit:+,.0f}",
-                f"冠軍：{champion_name}",
-                "positive" if champion_profit >= 0 else "negative",
-            )
-        with c2:
-            render_metric_card(
-                "冠軍期末總資產",
-                f"{curr_symbol} {champion_final:,.0f}",
-                f"CAGR {champion_row['CAGR 年化報酬']} | XIRR {champion_row['XIRR 資金加權']}",
-                "neutral",
-            )
-        with c3:
-            render_metric_card(
-                "總報酬率 / 夏普比率",
-                f"{champion_row['_raw_roi']:+.2%}",
-                f"Sharpe {champion_row['夏普比率 (Sharpe)']} | Calmar {champion_row['卡瑪比率 (Calmar)']}",
-                "positive" if champion_profit >= 0 else "negative",
-            )
-        with c4:
-            render_metric_card(
-                "最大歷史回撤 (MDD)",
-                f"{champion_mdd:.2%}",
-                f"最長套牢 {champion_row['最長套牢天數']}",
-                "negative" if champion_mdd < -0.2 else "neutral",
-            )
+        render_metric_grid(
+            [
+                {
+                    "title": "冠軍實賺淨利潤",
+                    "value": f"{curr_symbol} {champion_profit:+,.0f}",
+                    "sub": f"冠軍：{champion_name}",
+                    "state": "positive" if champion_profit >= 0 else "negative",
+                },
+                {
+                    "title": "冠軍期末總資產",
+                    "value": f"{curr_symbol} {champion_final:,.0f}",
+                    "sub": f"CAGR {champion_row['CAGR 年化報酬']} ｜ XIRR {champion_row['XIRR 資金加權']}",
+                    "state": "neutral",
+                },
+                {
+                    "title": "總報酬率 / 夏普比率",
+                    "value": f"{champion_row['_raw_roi']:+.2%}",
+                    "sub": f"Sharpe {champion_row['夏普比率 (Sharpe)']} ｜ Calmar {champion_row['卡瑪比率 (Calmar)']}",
+                    "state": "positive" if champion_profit >= 0 else "negative",
+                },
+                {
+                    "title": "最大歷史回撤 (MDD)",
+                    "value": f"{champion_mdd:.2%}",
+                    "sub": f"最長套牢 {champion_row['最長套牢天數']}",
+                    "state": "negative" if champion_mdd < -0.2 else "neutral",
+                },
+            ]
+        )
 
         if "DCA" in champion_name and "Dip" not in champion_name:
             reason_bullets = [
@@ -357,7 +370,7 @@ def render_strategy_pk_tab(
             "累積交易次數",
         ]
         display_df = df_results[display_cols].copy()
-        display_df.loc[0, "策略名稱"] = f"👑 {champion_name}"
+        display_df.loc[0, "策略名稱"] = f"{champion_name}（領先）"
         st.dataframe(display_df.set_index("策略名稱"), width="stretch")
 
         c_chart_hdr, c_log_chk = st.columns([3, 1])
@@ -409,20 +422,19 @@ def render_strategy_pk_tab(
             if not strat_cls.is_timing:
                 buys_df, buy_summary = TradeLedger.extract_buy_records(res_curve, curr_symbol)
                 if not buys_df.empty:
-                    b_c1, b_c2, b_c3, b_c4 = st.columns(4)
-                    with b_c1:
-                        render_metric_card("累積扣款次數", buy_summary["累積購買次數"], "成功買入次數", "neutral")
-                    with b_c2:
-                        render_metric_card("累積持有股數", buy_summary["累積持有股數"], "期末持有總股數", "neutral")
-                    with b_c3:
-                        render_metric_card("平均買入成本", buy_summary["平均持股成本"], "扣除餘現金之每股成本", "positive")
-                    with b_c4:
-                        render_metric_card("期末持股市值", buy_summary["期末持股市值"], "按期末收盤價換算", "neutral")
+                    render_metric_grid(
+                        [
+                            {"title": "累積扣款次數", "value": buy_summary["累積購買次數"], "sub": "成功買入次數", "state": "neutral"},
+                            {"title": "累積持有股數", "value": buy_summary["累積持有股數"], "sub": "期末持有總股數", "state": "neutral"},
+                            {"title": "平均買入成本", "value": buy_summary["平均持股成本"], "sub": "扣除餘現金之每股成本", "state": "positive"},
+                            {"title": "期末持股市值", "value": buy_summary["期末持股市值"], "sub": "按期末收盤價換算", "state": "neutral"},
+                        ]
+                    )
 
                     st.dataframe(buys_df.set_index("購買序號"), width="stretch")
                     csv_buys = buys_df.to_csv(index=False, encoding="utf-8-sig")
                     st.download_button(
-                        label=f"📥 下載【{inspect_strat}】購買紀錄 (CSV)",
+                        label=f"下載【{inspect_strat}】購買紀錄 (CSV)",
                         data=csv_buys,
                         file_name=f"{target_ticker}_{strat_cls.strategy_id}_purchase_history.csv",
                         mime="text/csv",
@@ -440,30 +452,34 @@ def render_strategy_pk_tab(
                     curr_symbol=curr_symbol,
                 )
 
-                m_c1, m_c2, m_c3, m_c4 = st.columns(4)
-                with m_c1:
-                    render_metric_card(
-                        "策略勝率",
-                        summary["勝率"],
-                        f"獲利 {summary['獲利筆數']} 筆 / 虧損 {summary['虧損筆數']} 筆",
-                        "positive" if summary["_raw_win_rate"] >= 0.5 else "negative",
-                    )
-                with m_c2:
-                    render_metric_card(
-                        "盈虧比 (Profit Factor)",
-                        summary["盈虧比 (Profit Factor)"],
-                        f"單筆期望值 {summary['單筆期望值']}",
-                        "positive" if summary["_raw_pf"] >= 1.5 else "neutral",
-                    )
-                with m_c3:
-                    render_metric_card("平均持倉天數", summary["平均持倉天數"], "已平倉平均抱單時間", "neutral")
-                with m_c4:
-                    render_metric_card(
-                        "總交易回合數",
-                        f"{summary['總交易次數']} 筆",
-                        f"已平倉 {summary['已平倉交易']} 筆",
-                        "neutral",
-                    )
+                render_metric_grid(
+                    [
+                        {
+                            "title": "策略勝率",
+                            "value": summary["勝率"],
+                            "sub": f"獲利 {summary['獲利筆數']} 筆 / 虧損 {summary['虧損筆數']} 筆",
+                            "state": "positive" if summary["_raw_win_rate"] >= 0.5 else "negative",
+                        },
+                        {
+                            "title": "盈虧比 (Profit Factor)",
+                            "value": summary["盈虧比 (Profit Factor)"],
+                            "sub": f"單筆期望值 {summary['單筆期望值']}",
+                            "state": "positive" if summary["_raw_pf"] >= 1.5 else "neutral",
+                        },
+                        {
+                            "title": "平均持倉天數",
+                            "value": summary["平均持倉天數"],
+                            "sub": "已平倉平均抱單時間",
+                            "state": "neutral",
+                        },
+                        {
+                            "title": "總交易回合數",
+                            "value": f"{summary['總交易次數']} 筆",
+                            "sub": f"已平倉 {summary['已平倉交易']} 筆",
+                            "state": "neutral",
+                        },
+                    ]
+                )
 
                 # 疊加均線參考
                 ma_overlays: Dict[str, pd.Series] = {}
@@ -489,6 +505,17 @@ def render_strategy_pk_tab(
                     ma_overlays["下軌"] = l_b
 
                 st.markdown("##### K 線進出場訊號標記圖 (原生價格)")
+                resample_weekly = False
+                if len(res_curve) > 1200:
+                    kline_gran = st.radio(
+                        "K 線週期",
+                        options=["週 K（長區間推薦）", "日 K（逐日完整）"],
+                        index=0,
+                        horizontal=True,
+                        key=f"pk_kline_gran_{target_ticker}",
+                    )
+                    resample_weekly = kline_gran == "週 K（長區間推薦）"
+
                 native_curr = str(df_target["quote_currency"].iloc[0]) if "quote_currency" in df_target.columns else "USD"
                 native_sym = "NT$" if native_curr == "TWD" else "$"
                 render_candlestick_with_markers(
@@ -497,13 +524,14 @@ def render_strategy_pk_tab(
                     target_ticker,
                     curr_symbol=native_sym,
                     ma_overlays=ma_overlays if ma_overlays else None,
+                    resample_weekly=resample_weekly,
                 )
 
                 if not trades_df.empty:
                     st.dataframe(trades_df.set_index("進場日期"), width="stretch")
                     csv_trades = trades_df.to_csv(index=False, encoding="utf-8-sig")
                     st.download_button(
-                        label=f"📥 下載【{inspect_strat}】逐筆交易明細 (CSV)",
+                        label=f"下載【{inspect_strat}】逐筆交易明細 (CSV)",
                         data=csv_trades,
                         file_name=f"{target_ticker}_{strat_cls.strategy_id}_trade_log.csv",
                         mime="text/csv",
@@ -574,7 +602,7 @@ def render_strategy_pk_tab(
             with c_opt3:
                 opt_tf = st.selectbox("計算週期", ["日線 (Daily)", "週線 (Weekly)"], index=0, key="grid_tf_dip")
 
-        if st.button("⚡ 開始執行 2D 矩陣尋優", key="btn_run_generic_grid", type="primary"):
+        if st.button("開始執行 2D 矩陣尋優", key="btn_run_generic_grid", type="primary"):
             with st.spinner("正在運算所有參數組合之收益與風險矩陣..."):
                 if "SMA 雙均線" in opt_strategy:
                     heatmap_df, flat_df, best_p = GridOptimizer.run_ma_grid(
@@ -667,14 +695,14 @@ def render_strategy_pk_tab(
             ]
             render_insight_panel("尋優結果摘要", bullets, tone="info")
 
-            if st.button("✨ 一鍵套用最佳參數至主回測", key="btn_apply_best_grid"):
+            if st.button("套用最佳參數至主回測", key="btn_apply_best_grid"):
                 app_info = grid_state["apply_info"]
                 sid = app_info["strat_id"]
                 st.session_state["_pending_grid_apply"] = {
                     f"{target_ticker}_{sid}_{p_k}": p_v
                     for p_k, p_v in app_info["updates"].items()
                 }
-                st.toast("已套用最佳參數，請於「總覽與成長曲線」查看更新結果！", icon="✅")
+                st.toast("已套用最佳參數，請於「總覽與成長曲線」查看更新結果。")
                 st.rerun()
 
             render_parameter_heatmap(
@@ -693,14 +721,14 @@ def render_strategy_pk_tab(
 
             csv_grid = flat_df.to_csv(index=False, encoding="utf-8-sig")
             st.download_button(
-                label="📥 下載完整尋優矩陣結果 (CSV)",
+                label="下載完整尋優矩陣結果 (CSV)",
                 data=csv_grid,
                 file_name=f"{target_ticker}_{grid_state['opt_strategy'].split(' ')[0]}_grid_results.csv",
                 mime="text/csv",
                 key="btn_download_generic_grid",
             )
 
-    with st.expander("💡 量化回測機制與扣款細節說明", expanded=False):
+    with st.expander("量化回測機制與扣款細節說明", expanded=False):
         st.markdown(
             """
             1. **無未來視撮合**：技術指標均以 T 日收盤之**還原除權息價格 (Native Currency)** 計算，確認訊號後一律於 **T+1 日開盤價** 執行買賣。

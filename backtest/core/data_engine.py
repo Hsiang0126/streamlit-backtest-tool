@@ -19,6 +19,18 @@ class DataEngine:
 
     DEFAULT_USDTWD_RATE = 32.0
 
+    # 台灣櫃買中心 (TPEx) 常見上櫃標的與債券 ETF，直接對應 .TWO 以免先請求 .TW 產生 404
+    KNOWN_TW_OTC_TICKERS = {
+        "00679B",
+        "00687B",
+        "00720B",
+        "00751B",
+        "00772B",
+        "00795B",
+        "00933B",
+        "00937B",
+    }
+
     PRESET_OPTIONS = {
         "美股指數與權值": [
             "QQQ (納斯達克100)",
@@ -57,11 +69,23 @@ class DataEngine:
         return bool(re.match(r"^\d{4,6}[A-Z]?$", clean))
 
     @classmethod
+    def is_likely_otc_taiwan_ticker(cls, ticker: str) -> bool:
+        """判定是否為常見台股上櫃標的（含國內掛牌之 B 尾碼債券 ETF）。"""
+        clean = ticker.strip().upper()
+        if clean.endswith(".TWO"):
+            return True
+        if clean.endswith(".TW"):
+            return False
+        return clean in cls.KNOWN_TW_OTC_TICKERS or bool(re.match(r"^00\d{3,4}B$", clean))
+
+    @classmethod
     def normalize_ticker(cls, ticker: str) -> str:
-        """將使用者輸入之標的代碼正規化，台股自動補上 .TW 後綴。"""
+        """將使用者輸入之標的代碼正規化，台股自動補上 .TWO 或 .TW 後綴。"""
         t = ticker.strip().upper()
         if t.endswith((".TW", ".TWO")):
             return t
+        if cls.is_likely_otc_taiwan_ticker(t):
+            return f"{t}.TWO"
         if cls.is_taiwan_ticker(t):
             return f"{t}.TW"
         return t
@@ -241,6 +265,7 @@ class DataEngine:
             dtype=float,
         )
         fx_extracted = False
+        fx_first_dt: Optional[pd.Timestamp] = None
         try:
             fx_frame = cls._extract_ticker_frame(raw_data, "USDTWD=X")
             if fx_frame is not None and not fx_frame.empty:
@@ -256,6 +281,7 @@ class DataEngine:
                         if not extracted.empty:
                             fx_rates = extracted
                             fx_extracted = True
+                            fx_first_dt = pd.Timestamp(extracted.index.min())
         except Exception:
             fx_extracted = False
 
@@ -271,16 +297,17 @@ class DataEngine:
                 sub_df = cls._extract_ticker_frame(raw_data, fmt_t)
                 cleaned, warns = cls.clean_ohlc(sub_df, orig_t)
 
-                # 若原本為自動補 .TW 的台股代碼且查無資料，自動嘗試上櫃 .TWO
-                if cleaned.empty and fmt_t.endswith(".TW") and not orig_t.endswith(".TW"):
-                    two_symbol = f"{fmt_t[:-3]}.TWO"
-                    fallback_df = cls._download_single_fallback(two_symbol, warmup_start_ts, end_ts)
-                    cleaned_two, warns_two = cls.clean_ohlc(fallback_df, orig_t)
-                    if not cleaned_two.empty:
-                        cleaned = cleaned_two
-                        warns = [f"{orig_t}：上市 ({fmt_t}) 無資料，已自動切換上櫃代碼 ({two_symbol}) 載入。"]
+                # 若為未帶後綴之台股代碼且首選市場無資料，雙向自動嘗試備援 (.TW <-> .TWO)
+                if cleaned.empty and not orig_t.endswith((".TW", ".TWO")) and fmt_t.endswith((".TW", ".TWO")):
+                    alt_symbol = f"{fmt_t[:-3]}.TWO" if fmt_t.endswith(".TW") else f"{fmt_t[:-4]}.TW"
+                    fallback_df = cls._download_single_fallback(alt_symbol, warmup_start_ts, end_ts)
+                    cleaned_alt, _ = cls.clean_ohlc(fallback_df, orig_t)
+                    if not cleaned_alt.empty:
+                        cleaned = cleaned_alt
+                        warns = [f"{orig_t}：已自動切換至 {alt_symbol} 載入。"]
                     else:
-                        warns.extend(warns_two)
+                        core = fmt_t.rsplit(".", 1)[0]
+                        warns = [f"{orig_t}：上市 ({core}.TW) 與上櫃 ({core}.TWO) 皆查無行情數據，請確認代碼是否正確。"]
 
                 all_warnings.extend(warns)
                 if cleaned.empty:
@@ -294,7 +321,19 @@ class DataEngine:
                 all_warnings.append(f"{orig_t} 資料處理異常：{exc}")
 
         if not individual_dict:
-            return {}, pd.DataFrame(), fx_rates, curr_symbol, all_warnings
+            return {}, pd.DataFrame(), fx_rates, curr_symbol, list(dict.fromkeys(all_warnings))
+
+        if fx_extracted and fx_first_dt is not None:
+            has_early_cross_curr = any(
+                str(df["quote_currency"].iloc[0]).upper() != target_curr_code
+                and not df[df.index >= user_start_ts].empty
+                and pd.Timestamp(df[df.index >= user_start_ts].index.min()) < fx_first_dt - pd.Timedelta(days=30)
+                for df in individual_dict.values()
+            )
+            if has_early_cross_curr:
+                all_warnings.append(
+                    f"USD/TWD 歷史匯率自 {fx_first_dt.strftime('%Y-%m-%d')} 起有報價，更早區間沿用首筆有效匯率估算。"
+                )
 
         # 檢查每個標的在 user_start_ts 之後是否有足夠資料，並計算多資產共同有效起始日（消除 bfill 前瞻偏差）
         post_start_mins: Dict[str, pd.Timestamp] = {}
@@ -304,7 +343,7 @@ class DataEngine:
                 post_start_mins[orig_t] = pd.Timestamp(post.index.min())
 
         if not post_start_mins:
-            return individual_dict, pd.DataFrame(), fx_rates, curr_symbol, all_warnings
+            return individual_dict, pd.DataFrame(), fx_rates, curr_symbol, list(dict.fromkeys(all_warnings))
 
         common_start_ts = max(user_start_ts, max(post_start_mins.values()))
         if common_start_ts > user_start_ts:
@@ -321,7 +360,7 @@ class DataEngine:
             trading_calendar_set.update(active_days)
 
         if not trading_calendar_set:
-            return individual_dict, pd.DataFrame(), fx_rates, curr_symbol, all_warnings
+            return individual_dict, pd.DataFrame(), fx_rates, curr_symbol, list(dict.fromkeys(all_warnings))
 
         unified_calendar = pd.DatetimeIndex(sorted(trading_calendar_set))
 
@@ -376,4 +415,4 @@ class DataEngine:
             fx_rates.reindex(full_fx_idx).ffill().bfill().fillna(cls.DEFAULT_USDTWD_RATE)
         )
 
-        return individual_dict, aligned_panel, aligned_fx_full, curr_symbol, all_warnings
+        return individual_dict, aligned_panel, aligned_fx_full, curr_symbol, list(dict.fromkeys(all_warnings))

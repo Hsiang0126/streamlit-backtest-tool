@@ -1,33 +1,34 @@
 """
-量化回測與多資產配置終端 (Main Application Entry)
+量化回測與多資產配置系統 (Main Application Entry)
 設計原則：
 1. 簡潔分層側邊欄 + 一鍵情境範本 on_change 即時連動
-2. 支援單標的策略 PK 與多資產配置再平衡雙核心模式
-3. 完整支援台美股稅費、券商手續費折數、上櫃 .TWO 自動備援與無前瞻偏差對齊
+2. 支援單標的策略比較與多資產配置再平衡雙核心模式
+3. 完整支援台美股稅費、券商手續費折數、上櫃 .TWO 自動解析與無前瞻偏差對齊
+4. 支援 20~30 年以上及最長可用歷史長週期回測
 """
-import sys
+import datetime
 import os
-import streamlit as st
+import sys
 import pandas as pd
+import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core.data_engine import DataEngine
 from core.cost_model import AssetCostStructure
+from core.data_engine import DataEngine
+import strategies.advanced
 import strategies.dca
 import strategies.ma_cross
 import strategies.oscillators
-import strategies.advanced
-from ui.theme import apply_dark_theme, render_context_banner
-from ui.tab_strategy_pk import render_strategy_pk_tab
 from ui.tab_portfolio_rebalance import render_portfolio_rebalance_tab
+from ui.tab_strategy_pk import render_strategy_pk_tab
+from ui.theme import apply_editorial_theme, render_context_banner, render_page_header
 
 st.set_page_config(
     layout="wide",
-    page_title="PRO 量化回測與多資產配置終端",
-    page_icon="📈",
+    page_title="量化回測與多資產配置",
 )
-apply_dark_theme()
+apply_editorial_theme()
 
 SCENARIO_OPTIONS = [
     "自由自訂模式",
@@ -35,6 +36,26 @@ SCENARIO_OPTIONS = [
     "退休股債全天候 (0050 + VT + 00679B)",
     "積極科技成長 (0050 + 00631L + QQQ)",
 ]
+
+TIMESPAN_OPTIONS = [
+    "近 3 年",
+    "近 5 年",
+    "近 10 年",
+    "近 15 年",
+    "近 20 年",
+    "近 30 年",
+    "最長可用歷史 (Max)",
+    "自訂日期",
+]
+
+TIMESPAN_YEARS = {
+    "近 3 年": 3,
+    "近 5 年": 5,
+    "近 10 年": 10,
+    "近 15 年": 15,
+    "近 20 年": 20,
+    "近 30 年": 30,
+}
 
 ALL_PRESETS = []
 for _group_name, _items in DataEngine.PRESET_OPTIONS.items():
@@ -85,7 +106,6 @@ def _on_scenario_change():
         st.session_state["sb_monthly"] = round(20000.0 * fx, 0)
         st.session_state["sb_invest_day_one"] = True
         st.session_state["sb_timespan"] = "近 5 年"
-        # 同步套用穩健現金預留權重
         st.session_state["weight_input_CASH_RESERVE"] = 10.0
     elif "積極科技成長" in choice:
         st.session_state["sb_presets"] = [
@@ -152,23 +172,22 @@ user_currency = st.sidebar.selectbox(
 )
 is_twd = "TWD" in user_currency
 
-c_cap1, c_cap2 = st.sidebar.columns(2)
-with c_cap1:
-    initial_capital = st.number_input(
-        "期初本金",
-        min_value=0.0,
-        step=10000.0 if is_twd else 500.0,
-        key="sb_init_cap",
-        help="第 1 天開盤即全額投入的單筆資金；純定期定額請填 0。",
-    )
-with c_cap2:
-    monthly_inflow = st.number_input(
-        "每月定投",
-        min_value=0.0,
-        step=5000.0 if is_twd else 200.0,
-        key="sb_monthly",
-        help="每月固定注入帳戶之新資金。",
-    )
+initial_capital = st.sidebar.number_input(
+    "期初本金",
+    min_value=0.0,
+    step=10000.0 if is_twd else 500.0,
+    format="%.0f",
+    key="sb_init_cap",
+    help="第 1 天開盤即全額投入的單筆資金；純定期定額請填 0。",
+)
+monthly_inflow = st.sidebar.number_input(
+    "每月定投",
+    min_value=0.0,
+    step=5000.0 if is_twd else 200.0,
+    format="%.0f",
+    key="sb_monthly",
+    help="每月固定注入帳戶之新資金。",
+)
 
 invest_day_one = False
 if initial_capital == 0.0 and monthly_inflow > 0.0:
@@ -181,26 +200,39 @@ if initial_capital == 0.0 and monthly_inflow > 0.0:
 st.sidebar.markdown("##### 3. 回測區間")
 time_span = st.sidebar.selectbox(
     "回測時長",
-    ["近 3 年", "近 5 年", "近 10 年", "自訂日期"],
+    TIMESPAN_OPTIONS,
     key="sb_timespan",
+    help="支援長達 20~30 年或標的上市以來的最長歷史區間（實際起算日依標的最早可取得行情自動對齊）。",
 )
 today = pd.to_datetime("today").normalize()
 
-if time_span == "近 3 年":
-    start_date = (today - pd.DateOffset(years=3)).strftime("%Y-%m-%d")
+if time_span in TIMESPAN_YEARS:
+    years_back = TIMESPAN_YEARS[time_span]
+    start_date = (today - pd.DateOffset(years=years_back)).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
-elif time_span == "近 5 年":
-    start_date = (today - pd.DateOffset(years=5)).strftime("%Y-%m-%d")
-    end_date = today.strftime("%Y-%m-%d")
-elif time_span == "近 10 年":
-    start_date = (today - pd.DateOffset(years=10)).strftime("%Y-%m-%d")
+elif time_span == "最長可用歷史 (Max)":
+    start_date = "1980-01-01"
     end_date = today.strftime("%Y-%m-%d")
 else:
-    c_s, c_e = st.sidebar.columns(2)
-    with c_s:
-        start_date = st.date_input("開始", value=pd.to_datetime("2018-01-01")).strftime("%Y-%m-%d")
-    with c_e:
-        end_date = st.date_input("結束", value=today).strftime("%Y-%m-%d")
+    start_dt = st.sidebar.date_input(
+        "開始日期",
+        value=datetime.date(2005, 1, 1),
+        min_value=datetime.date(1970, 1, 1),
+        max_value=today.date(),
+        key="sb_custom_start",
+    )
+    end_dt = st.sidebar.date_input(
+        "結束日期",
+        value=today.date(),
+        min_value=datetime.date(1970, 1, 1),
+        max_value=today.date(),
+        key="sb_custom_end",
+    )
+    if start_dt >= end_dt:
+        st.sidebar.warning("開始日期需早於結束日期，請重新選擇。")
+        st.stop()
+    start_date = start_dt.strftime("%Y-%m-%d")
+    end_date = end_dt.strftime("%Y-%m-%d")
 
 with st.sidebar.expander("4. 交易摩擦成本設定", expanded=False):
     auto_cost = st.checkbox("自動匹配各市場官方稅費 (推薦)", value=True)
@@ -239,11 +271,13 @@ if st.sidebar.button("重新抓取最新行情", width="stretch"):
 
 
 # --- 主標題與橫幅 ---
-st.title("⚡ 量化回測與多資產配置終端")
-st.caption("跨市場日曆對齊 • 零前瞻偏差撮合 • 除權息還原指標 • 真實利潤歸因與風險評估")
+render_page_header(
+    title="量化回測與多資產配置",
+    subtitle="跨市場日曆對齊 · 零前瞻偏差撮合 · 除權息還原指標 · 風險與歸因評估",
+)
 
 if not target_symbols:
-    st.info("👈 請於左側選擇至少一個交易標的，或直接切換上方的「一鍵情境範本」。")
+    st.info("請於左側控制中心選擇至少一個交易標的，或切換「一鍵情境範本」。")
     st.stop()
 
 with st.spinner("正在載入市場歷史行情與進行跨市場匯率對齊..."):
@@ -255,26 +289,49 @@ with st.spinner("正在載入市場歷史行情與進行跨市場匯率對齊...
     )
     individual_dict, aligned_panel, aligned_fx, curr_symbol, warnings = raw_res
 
+INFO_TAGS = ("已自動切換", "共同起始日", "歷史匯率自")
 for w in warnings:
-    st.sidebar.warning(w)
+    if any(tag in w for tag in INFO_TAGS):
+        st.sidebar.info(w)
+    else:
+        st.sidebar.warning(w)
 
 if not individual_dict:
     st.error("未能成功載入任何標的數據，請確認標的代碼是否正確或稍後重試。")
     st.stop()
 
+active_ranges = []
+for df_item in individual_dict.values():
+    if "user_start_idx" in df_item.columns and (df_item["user_start_idx"] == True).any():
+        act = df_item[df_item["user_start_idx"] == True]
+    else:
+        act = df_item
+    if not act.empty:
+        active_ranges.append((pd.Timestamp(act.index.min()), pd.Timestamp(act.index.max())))
+
+if active_ranges:
+    eff_start_dt = min(r[0] for r in active_ranges)
+    eff_end_dt = max(r[1] for r in active_ranges)
+    eff_years = max(0.0, (eff_end_dt - eff_start_dt).days / 365.25)
+    eff_start_str = eff_start_dt.strftime("%Y-%m-%d")
+    eff_end_str = f"{eff_end_dt.strftime('%Y-%m-%d')}（約 {eff_years:.1f} 年）"
+else:
+    eff_start_str = start_date
+    eff_end_str = end_date
+
 cap_summary = f"期初 {curr_symbol} {initial_capital:,.0f} + 每月 {curr_symbol} {monthly_inflow:,.0f}"
 render_context_banner(
     tickers=list(individual_dict.keys()),
-    start_str=start_date,
-    end_str=end_date,
+    start_str=eff_start_str,
+    end_str=eff_end_str,
     capital_summary=cap_summary,
     currency_label="TWD 新台幣" if is_twd else "USD 美元",
 )
 
 tab_pk, tab_rebalance = st.tabs(
     [
-        "⚔️ 單標的 × 多策略 PK",
-        "💼 多資產配置 × 再平衡",
+        "單標的策略比較",
+        "多資產配置與再平衡",
     ]
 )
 

@@ -18,8 +18,9 @@ from core.cost_model import CostModel, AssetCostStructure
 from core.metrics import PerformanceMetrics
 from core.portfolio_engine import BacktestEngine
 from core.portfolio_optimizer import PortfolioOptimizer
-from ui.theme import render_metric_card, render_insight_panel
+from ui.theme import render_metric_grid, render_insight_panel
 from ui.components_chart import (
+    PLOTLY_CONFIG,
     _apply_terminal_layout,
     render_equity_comparison_chart,
     render_drawdown_chart,
@@ -99,7 +100,7 @@ def render_portfolio_rebalance_tab(
     invest_day_one: bool = False,
 ):
     if aligned_panel is None or aligned_panel.empty or not isinstance(aligned_panel.columns, pd.MultiIndex):
-        st.info("👈 請在左側選擇至少兩個標的並載入市場數據。")
+        st.info("請在左側控制中心選擇至少兩個標的並載入市場數據。")
         return
 
     tickers = list(dict.fromkeys(aligned_panel.columns.get_level_values(0)))
@@ -126,7 +127,7 @@ def render_portfolio_rebalance_tab(
         st.session_state["cash_rate_pct"] = default_rate
 
     with st.expander("配置比例與再平衡參數設定", expanded=True):
-        c_cash1, c_cash2, c_freq, c_band = st.columns([1, 1, 1.3, 1.3])
+        c_cash1, c_cash2 = st.columns(2)
         with c_cash1:
             if "weight_input_CASH_RESERVE" not in st.session_state:
                 st.session_state["weight_input_CASH_RESERVE"] = 0.0
@@ -140,13 +141,15 @@ def render_portfolio_rebalance_tab(
             )
         with c_cash2:
             cash_rate_pct = st.number_input(
-                f"活存預估年利率 (%)",
+                "活存預估年利率 (%)",
                 min_value=0.0,
                 max_value=15.0,
                 step=0.1,
                 key="cash_rate_pct",
                 help="依真實日曆天數按日複利計息。",
             )
+
+        c_freq, c_band = st.columns(2)
         with c_freq:
             rebal_freq = st.selectbox(
                 "再平衡檢驗週期",
@@ -169,7 +172,7 @@ def render_portfolio_rebalance_tab(
                 help="僅當任一資產偏離目標權重超過此門檻時才調倉，避免無效手續費。",
             )
 
-        # AI 快捷權重按鈕列
+        # 一鍵套用權重按鈕列
         st.markdown("###### 一鍵套用配置策略")
         btn_col1, btn_col2, btn_col3, btn_col4, btn_col5 = st.columns(5)
         scale_risky = max(0.0, (100.0 - cash_weight_pct) / 100.0)
@@ -182,19 +185,19 @@ def render_portfolio_rebalance_tab(
             for t in tickers:
                 st.session_state[f"weight_input_{t}"] = float(scaled_w.get(t, 0.0))
 
-        if btn_col1.button("⭐ 最高夏普", width="stretch", help="性價比最高，追求最佳風險調整後報酬"):
+        if btn_col1.button("最高夏普", width="stretch", help="性價比最高，追求最佳風險調整後報酬"):
             _apply_weights(w_max_sharpe)
             st.rerun()
-        if btn_col2.button("🛡️ 最小波動", width="stretch", help="追求整體淨值波動度最低之防禦配置"):
+        if btn_col2.button("最小波動", width="stretch", help="追求整體淨值波動度最低之防禦配置"):
             _apply_weights(w_min_vol)
             st.rerun()
-        if btn_col3.button("⚖️ 風險平價", width="stretch", help="依波動度倒數加權，平衡各資產風險貢獻"):
+        if btn_col3.button("風險平價", width="stretch", help="依波動度倒數加權，平衡各資產風險貢獻"):
             _apply_weights(w_rp)
             st.rerun()
-        if btn_col4.button("🔄 等權重 1/N", width="stretch", help="平均分配至各風險標的"):
+        if btn_col4.button("等權重 1/N", width="stretch", help="平均分配至各風險標的"):
             _apply_weights(w_eq)
             st.rerun()
-        if btn_col5.button("✨ 自動配平 100%", width="stretch", help="依目前輸入比例等比縮放至剛好 100%"):
+        if btn_col5.button("自動配平 100%", width="stretch", help="依目前輸入比例等比縮放至剛好 100%"):
             cur_w_map = {t: float(st.session_state.get(f"weight_input_{t}", 0.0)) for t in tickers}
             cur_sum = sum(cur_w_map.values())
             target_risky = max(0.0, 100.0 - cash_weight_pct)
@@ -217,24 +220,26 @@ def render_portfolio_rebalance_tab(
             if f"weight_input_{t}" not in st.session_state:
                 st.session_state[f"weight_input_{t}"] = float(eq_w)
 
-        cols = st.columns(min(len(tickers), 5))
         raw_weights: Dict[str, float] = {}
-        for idx, t in enumerate(tickers):
-            with cols[idx % len(cols)]:
-                raw_weights[t] = st.number_input(
-                    f"{t} 權重 (%)",
-                    min_value=0.0,
-                    max_value=100.0,
-                    step=1.0,
-                    key=f"weight_input_{t}",
-                )
+        for start_i in range(0, len(tickers), 3):
+            chunk = tickers[start_i : start_i + 3]
+            cols = st.columns(len(chunk))
+            for c_idx, t in enumerate(chunk):
+                with cols[c_idx]:
+                    raw_weights[t] = st.number_input(
+                        f"{t} 權重 (%)",
+                        min_value=0.0,
+                        max_value=100.0,
+                        step=1.0,
+                        key=f"weight_input_{t}",
+                    )
 
     total_weight = sum(raw_weights.values()) + cash_weight_pct
     diff_from_100 = round(100.0 - total_weight, 1)
 
     if abs(diff_from_100) > 0.1:
         st.warning(
-            f"⚠️ 目前總配置權重為 **{total_weight:.1f}%**（差 **{diff_from_100:+.1f}%**），請調整至 100% 或點擊「✨ 自動配平 100%」。"
+            f"目前總配置權重為 **{total_weight:.1f}%**（差 **{diff_from_100:+.1f}%**），請調整至 100% 或點擊「自動配平 100%」。"
         )
         return
 
@@ -288,52 +293,51 @@ def render_portfolio_rebalance_tab(
     # 4 個清爽子分頁
     sub_ov, sub_attr, sub_mpt, sub_month = st.tabs(
         [
-            "📊 績效總覽與成長曲線",
-            "🎯 利潤歸因與權重漂移",
-            "🌈 效率前緣與相關性",
-            "🗓️ 月度報酬熱力圖",
+            "績效總覽與成長曲線",
+            "利潤歸因與權重漂移",
+            "效率前緣與相關性",
+            "月度報酬熱力圖",
         ]
     )
 
     # --- 子分頁 1：績效總覽與成長曲線 ---
     with sub_ov:
         net_gain = float(m["_raw_net_profit"])
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        with kpi1:
-            render_metric_card(
-                "實賺獲利總額",
-                f"{curr_symbol} {net_gain:+,.0f}",
-                f"累積投入 {m['累積投入本金']}",
-                "positive" if net_gain >= 0 else "negative",
-            )
-        with kpi2:
-            render_metric_card(
-                "期末總資產價值",
-                f"{curr_symbol} {m['_raw_final']:,.0f}",
-                f"含現金部位 {curr_symbol} {res_df['cash'].iloc[-1]:,.0f}",
-                "neutral",
-            )
-        with kpi3:
-            render_metric_card(
-                "CAGR / XIRR 年化",
-                f"{m['_raw_cagr']:+.2%}",
-                f"XIRR {m['XIRR 資金加權']} | Sharpe {m['夏普比率 (Sharpe)']}",
-                "positive" if m["_raw_cagr"] >= 0 else "negative",
-            )
-        with kpi4:
-            render_metric_card(
-                "最大回撤 (MDD) / Calmar",
-                f"{m['_raw_mdd']:.2%}",
-                f"Calmar {m['卡瑪比率 (Calmar)']} | 套牢 {m['最長套牢天數']}",
-                "negative" if m["_raw_mdd"] < -0.2 else "neutral",
-            )
+        render_metric_grid(
+            [
+                {
+                    "title": "實賺獲利總額",
+                    "value": f"{curr_symbol} {net_gain:+,.0f}",
+                    "sub": f"累積投入 {m['累積投入本金']}",
+                    "state": "positive" if net_gain >= 0 else "negative",
+                },
+                {
+                    "title": "期末總資產價值",
+                    "value": f"{curr_symbol} {m['_raw_final']:,.0f}",
+                    "sub": f"含現金部位 {curr_symbol} {res_df['cash'].iloc[-1]:,.0f}",
+                    "state": "neutral",
+                },
+                {
+                    "title": "CAGR / XIRR 年化",
+                    "value": f"{m['_raw_cagr']:+.2%}",
+                    "sub": f"XIRR {m['XIRR 資金加權']} ｜ Sharpe {m['夏普比率 (Sharpe)']}",
+                    "state": "positive" if m["_raw_cagr"] >= 0 else "negative",
+                },
+                {
+                    "title": "最大回撤 (MDD) / Calmar",
+                    "value": f"{m['_raw_mdd']:.2%}",
+                    "sub": f"Calmar {m['卡瑪比率 (Calmar)']} ｜ 套牢 {m['最長套牢天數']}",
+                    "state": "negative" if m["_raw_mdd"] < -0.2 else "neutral",
+                },
+            ]
+        )
 
         bullets, tone = _generate_diagnosis_bullets(m, m_drift, rebal_stats, cash_reserve_w, curr_symbol)
         render_insight_panel("投資組合健康度總評", bullets, tone=tone)
 
         if tolerance_pct > 0 and "Buy & Drift" not in rebal_freq:
             st.caption(
-                f"🛡️ 門檻保護調倉統計：實際調倉 **{rebal_stats['觸發調倉次數']} 次**，"
+                f"門檻保護調倉統計：實際調倉 **{rebal_stats['觸發調倉次數']} 次**，"
                 f"略過微小偏離 **{rebal_stats['成功略過調倉次數']} 次**，"
                 f"估計省下摩擦成本 **{curr_symbol} {rebal_stats['估計省下摩擦手續費']}**（累計實付交易成本 {curr_symbol} {rebal_stats.get('累計實付摩擦成本', 0.0):,.0f}）。"
             )
@@ -358,11 +362,11 @@ def render_portfolio_rebalance_tab(
         dd_map = {"目前配置 (再平衡)": PerformanceMetrics.calculate_drawdown_series(res_df)}
         if drift_df is not None:
             dd_map["對照組：不調倉 (Buy & Drift)"] = PerformanceMetrics.calculate_drawdown_series(drift_df)
-        render_drawdown_chart(dd_map, champion_name="目前配置 (再平衡)", height=310)
+        render_drawdown_chart(dd_map, champion_name="目前配置 (再平衡)", height=320)
 
         csv_port = res_df.to_csv(index=True, encoding="utf-8-sig")
         st.download_button(
-            label="📥 下載投資組合每日淨值與明細 (CSV)",
+            label="下載投資組合每日淨值與明細 (CSV)",
             data=csv_port,
             file_name="portfolio_daily_equity_history.csv",
             mime="text/csv",
@@ -373,6 +377,7 @@ def render_portfolio_rebalance_tab(
     with sub_attr:
         attrib_rows = []
         for t, attr in attribution.items():
+            disp_t = t.replace("💵 ", "")
             if t in target_weights:
                 w_disp = f"{target_weights[t]:.1%}"
             elif "現金" in t:
@@ -382,7 +387,7 @@ def render_portfolio_rebalance_tab(
 
             attrib_rows.append(
                 {
-                    "標的代碼": t,
+                    "標的代碼": disp_t,
                     "目標權重": w_disp,
                     "期末市值": f"{curr_symbol} {attr['final_value']:,.0f}",
                     "累計買入投入": f"{curr_symbol} {attr['cum_bought']:,.0f}",
@@ -406,7 +411,7 @@ def render_portfolio_rebalance_tab(
 
         with c_chart:
             st.markdown("##### 淨利潤貢獻橫條圖")
-            colors = ["#22c55e" if p >= 0 else "#ef4444" for p in df_attrib["_raw_profit"]]
+            colors = ["#15803D" if p >= 0 else "#B91C1C" for p in df_attrib["_raw_profit"]]
             fig_bar = go.Figure(
                 go.Bar(
                     x=df_attrib["_raw_profit"],
@@ -417,11 +422,17 @@ def render_portfolio_rebalance_tab(
                     textposition="auto",
                 )
             )
-            _apply_terminal_layout(fig_bar, x_title=f"淨貢獻獲利 ({curr_symbol})", height=350, hovermode="closest")
+            _apply_terminal_layout(
+                fig_bar,
+                x_title=f"淨貢獻獲利 ({curr_symbol})",
+                height=350,
+                hovermode="closest",
+                show_legend_bottom=False,
+            )
             fig_bar.update_yaxes(autorange="reversed")
-            st.plotly_chart(fig_bar, width="stretch")
+            st.plotly_chart(fig_bar, width="stretch", config=PLOTLY_CONFIG)
 
-        st.markdown("##### 實際資產權重漂移軌跡（黃色虛線為實際觸發調倉日）")
+        st.markdown("##### 實際資產權重漂移軌跡（虛線為實際觸發調倉日）")
         render_weight_drift_chart(
             res_df,
             tickers=tickers,
@@ -434,7 +445,7 @@ def render_portfolio_rebalance_tab(
         current_pt = PortfolioOptimizer.evaluate_custom_weights(opt_summary, target_weights)
         if not frontier_df.empty:
             st.markdown("##### 馬科維茨效率前緣 (Efficient Frontier — 週報酬與匯率調整後)")
-            st.caption("顯示 6,000 組隨機組合、各單一資產位置，以及您目前配置的紅叉位置 📍。")
+            st.caption("顯示 6,000 組隨機組合、各單一資產位置，以及您目前配置的紅色標記位置。")
             render_efficient_frontier(frontier_df, opt_summary, current_point=current_pt)
 
         c_corr, c_stats = st.columns([1.15, 1])
@@ -463,7 +474,7 @@ def render_portfolio_rebalance_tab(
         monthly_df = PerformanceMetrics.calculate_monthly_returns(res_df)
         render_monthly_returns_heatmap(monthly_df, title="多資產配置 — 各年度月報酬矩陣")
 
-    with st.expander("💡 多資產資金池與再平衡機制說明", expanded=False):
+    with st.expander("多資產資金池與再平衡機制說明", expanded=False):
         st.markdown(
             """
             1. **現金活存儲備隔離保護**：您設定的現金活存比例會嚴格保留，每月固定新注資僅投入風險性資產目標比例，不會擅自挪用活存或把全部餘額買光；且活存依實際日曆天數複利計息。
